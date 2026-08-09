@@ -1,0 +1,14 @@
+{
+  "name": "frontend",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "dev": "node node_modules/next/dist/bin/next dev -p 3050",
+    "build": "node node_modules/next/dist/bin/next build",
+    "start": "node node_modules/next/dist/bin/next start -p 3000"
+  },
+  "keywords": [],
+  "author": "Madhu Pahar",
+  "license": "ISC",
+  "description": "Cognitive Decline Predictor Frontend"
+}
