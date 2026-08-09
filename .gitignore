@@ -9,3 +9,4 @@ data/raw/
 data/processed/
 logs/
 notebooks/
+frontend/.env.local
