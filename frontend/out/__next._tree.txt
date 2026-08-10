@@ -1,0 +1,2 @@
+:HL["/cognitive-decline-predictor/_next/static/chunks/3y2gafyx7j0cp.css","style"]
+0:{"tree":{"name":"","param":null,"prefetchHints":4176,"slots":{"children":{"name":"__PAGE__","param":null,"prefetchHints":4256,"slots":null}}},"staleTime":300,"buildId":"PBLZHj15S7lMunRajCqm0"}

@@ -10,3 +10,14 @@ data/processed/
 logs/
 notebooks/
 frontend/.env.local
+frontend/old_node_modules/
+frontend/node_modules/
+data/raw/
+data/processed/
+logs/
+notebooks/
+*.zip
+__pycache__/
+*.pyc
+.DS_Store
+.env
