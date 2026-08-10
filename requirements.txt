@@ -1,0 +1,12 @@
+fastapi
+uvicorn
+python-multipart
+librosa
+spacy
+openai-whisper
+joblib
+numpy
+pandas
+langchain
+langchain-openai
+python-dotenv
