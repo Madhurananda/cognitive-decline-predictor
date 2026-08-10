@@ -37,7 +37,8 @@ load_dotenv()
 # Configuration
 # ============================================
 MODEL_DIR = "models"
-WHISPER_MODEL = "medium"
+WHISPER_MODEL = "base"
+# WHISPER_MODEL = "medium"
 MAX_AUDIO_DURATION = 180  # 3 minutes
 MIN_AUDIO_DURATION = 10   # 10 seconds
 
