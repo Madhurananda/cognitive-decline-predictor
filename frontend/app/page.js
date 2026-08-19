@@ -15,6 +15,10 @@ export default function Home() {
   const [isRecording, setIsRecording] = useState(false);
   const [recordingDuration, setRecordingDuration] = useState(0);
   const [inputSource, setInputSource] = useState(null);
+  
+  // New state for progress
+  const [progress, setProgress] = useState(0);
+  const [progressMessages, setProgressMessages] = useState([]);
 
   const mediaRecorderRef = useRef(null);
   const chunksRef = useRef([]);
@@ -226,31 +230,70 @@ export default function Home() {
     setLoading(true);
     setError(null);
     setResult(null);
+    setProgress(0);
+    setProgressMessages([]);
 
     const formData = new FormData();
     formData.append('file', file);
 
     try {
-      const response = await fetch(`${API_URL}/predict`, {
+      // Use the streaming endpoint
+      const response = await fetch(`${API_URL}/predict-stream`, {
         method: 'POST',
         body: formData,
       });
-
-      if (response.status === 429) {
-        const err = await response.json();
-        throw new Error(err.detail || 'Usage limit reached.');
-      }
 
       if (!response.ok) {
         const err = await response.json();
         throw new Error(err.detail || 'Prediction failed');
       }
 
-      const data = await response.json();
-      setResult(data);
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const chunk = decoder.decode(value);
+        const lines = chunk.split('\n');
+        
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            const jsonStr = line.substring(6);
+            try {
+              const data = JSON.parse(jsonStr);
+              
+              if (data.step === 'error') {
+                setError(data.message);
+                setLoading(false);
+                return;
+              }
+              
+              if (data.step === 'complete') {
+                setResult(data.result);
+                setLoading(false);
+                return;
+              }
+              
+              // Update progress
+              setProgress(data.progress || 0);
+              
+              // Add message if not already present
+              setProgressMessages(prev => {
+                const exists = prev.some(msg => msg.step === data.step);
+                if (exists) return prev;
+                return [...prev, { step: data.step, message: data.message, progress: data.progress }];
+              });
+              
+            } catch (e) {
+              console.error('Failed to parse SSE data:', e);
+            }
+          }
+        }
+      }
     } catch (err) {
       setError(err.message);
-    } finally {
       setLoading(false);
     }
   };
@@ -360,11 +403,32 @@ export default function Home() {
           </button>
         </form>
 
+        {/* Progress display */}
         {loading && (
-          <div className="mt-4 text-center" aria-live="polite">
-            <p className="text-blue-600 dark:text-blue-400">
-              ⏳ {inputSource === 'recorded' ? 'Processing Recorded Audio...' : 'Processing Uploaded Audio...'}
-            </p>
+          <div className="mt-4 p-4 bg-blue-50 dark:bg-blue-900/20 rounded-lg border border-blue-200 dark:border-blue-800">
+            <div className="flex items-center gap-3 mb-3">
+              <div className="animate-spin rounded-full h-5 w-5 border-2 border-blue-600 border-t-transparent" />
+              <span className="text-blue-600 dark:text-blue-400 font-medium">Processing...</span>
+              <span className="text-sm text-blue-500 dark:text-blue-300 ml-auto">{progress}%</span>
+            </div>
+            
+            {/* Progress bar */}
+            <div className="w-full h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden mb-3">
+              <div 
+                className="h-full bg-blue-600 rounded-full transition-all duration-500"
+                style={{ width: `${progress}%` }}
+              />
+            </div>
+            
+            {/* Step messages */}
+            <div className="space-y-1 max-h-32 overflow-y-auto">
+              {progressMessages.map((msg, idx) => (
+                <div key={idx} className="text-sm text-gray-600 dark:text-gray-300 flex items-center gap-2">
+                  <span className="text-xs text-blue-500">▸</span>
+                  {msg.message}
+                </div>
+              ))}
+            </div>
           </div>
         )}
 

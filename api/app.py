@@ -16,7 +16,7 @@ import subprocess
 import tempfile
 from collections import defaultdict
 from fastapi import FastAPI, File, UploadFile, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from langchain_openai import AzureChatOpenAI
 from langchain_core.prompts import PromptTemplate
@@ -25,7 +25,9 @@ from dotenv import load_dotenv
 import uvicorn
 from typing import List, Dict, Optional
 import warnings
-import groq  # NEW: Groq for ASR
+import groq
+import json
+import asyncio
 
 warnings.filterwarnings("ignore")
 
@@ -147,7 +149,7 @@ else:
     explanation_chain = None
 
 # ============================================
-# Helper: Convert to WAV (for librosa and Groq)
+# Helper: Convert to WAV
 # ============================================
 def convert_to_wav(input_bytes):
     """Convert any audio bytes to a proper 16kHz mono WAV file using ffmpeg."""
@@ -431,6 +433,7 @@ async def root():
         "version": "1.0.0",
         "endpoints": {
             "/predict": "POST - Upload audio file for prediction",
+            "/predict-stream": "POST - Stream progress for prediction",
             "/health": "GET - Check API health"
         }
     }
@@ -439,6 +442,149 @@ async def root():
 async def health():
     return {"status": "healthy", "model_loaded": model is not None}
 
+# ============================================
+# Streaming prediction endpoint
+# ============================================
+@app.post("/predict-stream")
+async def predict_stream(file: UploadFile = File(...)):
+    """Stream progress updates during prediction."""
+    
+    async def event_generator():
+        wav_path = None
+        try:
+            # Step 0: Starting
+            yield f"data: {json.dumps({'step': 'starting', 'message': '🚀 Waking up service...', 'progress': 5})}\n\n"
+            await asyncio.sleep(0.1)
+            
+            # Validate file
+            if not file.filename.endswith(('.wav', '.mp3', '.m4a')):
+                yield f"data: {json.dumps({'step': 'error', 'message': 'File must be a WAV, MP3, or M4A audio file'})}\n\n"
+                return
+            
+            # Step 1: Read and convert audio
+            yield f"data: {json.dumps({'step': 'converting', 'message': '🔊 Converting audio format...', 'progress': 10})}\n\n"
+            await asyncio.sleep(0.1)
+            
+            audio_bytes = await file.read()
+            if len(audio_bytes) == 0:
+                yield f"data: {json.dumps({'step': 'error', 'message': 'The uploaded audio file is empty.'})}\n\n"
+                return
+            
+            if len(audio_bytes) > 30 * 1024 * 1024:
+                yield f"data: {json.dumps({'step': 'error', 'message': 'Audio file too large. Maximum size is 30 MB.'})}\n\n"
+                return
+            
+            wav_path = convert_to_wav(audio_bytes)
+            
+            # Step 2: Check duration
+            yield f"data: {json.dumps({'step': 'validating', 'message': '⏱️ Validating audio duration...', 'progress': 20})}\n\n"
+            await asyncio.sleep(0.1)
+            
+            y, sr = librosa.load(wav_path, sr=16000)
+            duration = len(y) / sr
+            
+            if duration > MAX_AUDIO_DURATION:
+                yield f"data: {json.dumps({'step': 'error', 'message': f'Audio duration ({duration:.1f}s) exceeds maximum of {MAX_AUDIO_DURATION}s'})}\n\n"
+                return
+            
+            if duration < MIN_AUDIO_DURATION:
+                yield f"data: {json.dumps({'step': 'error', 'message': f'Audio too short ({duration:.1f}s). Please record at least {MIN_AUDIO_DURATION} seconds.'})}\n\n"
+                return
+            
+            # Step 3: Transcribe with Groq
+            yield f"data: {json.dumps({'step': 'transcribing', 'message': '🎤 Transcribing speech with Groq AI...', 'progress': 35})}\n\n"
+            await asyncio.sleep(0.1)
+            
+            if not groq_api_key:
+                yield f"data: {json.dumps({'step': 'error', 'message': 'GROQ_API_KEY not configured.'})}\n\n"
+                return
+            
+            with open(wav_path, "rb") as audio_file:
+                transcription = groq_client.audio.transcriptions.create(
+                    file=audio_file,
+                    model="whisper-large-v3",
+                    language="en",
+                    response_format="text"
+                )
+            transcript = transcription
+            
+            if not transcript or not transcript.strip():
+                yield f"data: {json.dumps({'step': 'error', 'message': 'No speech detected. Please speak clearly.'})}\n\n"
+                return
+            
+            word_count = len(transcript.split())
+            if word_count < 5:
+                yield f"data: {json.dumps({'step': 'error', 'message': f'Too little speech detected ({word_count} words). Please speak for at least 10 seconds.'})}\n\n"
+                return
+            
+            # Step 4: Extract features
+            yield f"data: {json.dumps({'step': 'features', 'message': '📊 Extracting acoustic and linguistic features...', 'progress': 55})}\n\n"
+            await asyncio.sleep(0.1)
+            
+            features = extract_features_from_path(wav_path, transcript)
+            if features is None:
+                yield f"data: {json.dumps({'step': 'error', 'message': 'Failed to extract features from audio.'})}\n\n"
+                return
+            
+            # Step 5: Predict
+            yield f"data: {json.dumps({'step': 'predicting', 'message': '🧠 Running cognitive decline prediction model...', 'progress': 75})}\n\n"
+            await asyncio.sleep(0.1)
+            
+            features_scaled = scaler.transform(features)
+            prediction = model.predict(features_scaled)[0]
+            probability = model.predict_proba(features_scaled)[0]
+            risk_score = probability[1]
+            
+            if prediction == 0:
+                result_text = "Low Risk"
+                confidence = probability[0]
+            else:
+                result_text = "High Risk"
+                confidence = probability[1]
+            
+            feature_dict = {col: float(features[0, i]) for i, col in enumerate(feature_cols)}
+            
+            # Step 6: Generate explanation
+            yield f"data: {json.dumps({'step': 'explaining', 'message': '🤖 Generating AI explanation...', 'progress': 88})}\n\n"
+            await asyncio.sleep(0.1)
+            
+            explanation = generate_explanation(risk_score, transcript, feature_dict)
+            
+            # Step 7: Spider diagram
+            yield f"data: {json.dumps({'step': 'spider', 'message': '📈 Creating spider diagram...', 'progress': 95})}\n\n"
+            await asyncio.sleep(0.1)
+            
+            spider_data = compute_spider_data(feature_dict)
+            
+            # Step 8: Complete
+            yield f"data: {json.dumps({
+                'step': 'complete',
+                'progress': 100,
+                'message': '✅ Analysis complete!',
+                'result': {
+                    'prediction': int(prediction),
+                    'result': result_text,
+                    'risk_score': float(risk_score),
+                    'confidence': float(confidence),
+                    'transcript': transcript,
+                    'duration_seconds': duration,
+                    'explanation': explanation,
+                    'spider_data': spider_data,
+                    'features': feature_dict
+                }
+            })}\n\n"
+            
+        except Exception as e:
+            yield f"data: {json.dumps({'step': 'error', 'message': f'Error: {str(e)}'})}\n\n"
+        finally:
+            if wav_path and os.path.exists(wav_path):
+                os.unlink(wav_path)
+    
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+# ============================================
+# Non-streaming prediction endpoint (kept for compatibility)
+# ============================================
 @app.post("/predict")
 async def predict(file: UploadFile = File(...)):
     if not file.filename.endswith(('.wav', '.mp3', '.m4a')):
@@ -465,7 +611,6 @@ async def predict(file: UploadFile = File(...)):
         
         wav_path = convert_to_wav(audio_bytes)
         
-        # Check duration
         y, sr = librosa.load(wav_path, sr=16000)
         duration = len(y) / sr
         
@@ -487,7 +632,6 @@ async def predict(file: UploadFile = File(...)):
                 detail=f"Audio too short ({duration:.1f}s). Please record at least {MIN_AUDIO_DURATION} seconds."
             )
         
-        # ---- Transcribe using Groq ----
         if not groq_api_key:
             raise HTTPException(
                 status_code=500,
@@ -497,7 +641,7 @@ async def predict(file: UploadFile = File(...)):
         with open(wav_path, "rb") as audio_file:
             transcription = groq_client.audio.transcriptions.create(
                 file=audio_file,
-                model="whisper-large-v3",  # or "whisper-large-v3-turbo"
+                model="whisper-large-v3",
                 language="en",
                 response_format="text"
             )
@@ -516,7 +660,6 @@ async def predict(file: UploadFile = File(...)):
                 detail=f"Too little speech detected ({word_count} words). Please speak for at least 10 seconds with clear description."
             )
         
-        # ---- Feature extraction and prediction ----
         features = extract_features_from_path(wav_path, transcript)
         if features is None:
             raise HTTPException(
@@ -567,6 +710,5 @@ async def predict(file: UploadFile = File(...)):
 # Run the app
 # ============================================
 if __name__ == "__main__":
-    # Render sets the PORT environment variable, but we default to 7860
     port = int(os.getenv("PORT", 7860))
     uvicorn.run(app, host="0.0.0.0", port=port)
