@@ -19,7 +19,7 @@ COPY api/ ./api/
 COPY models/ ./models/
 
 # Expose port
-EXPOSE 8000
+EXPOSE 7860
 
 # Run the API
-CMD ["uvicorn", "api.app:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "api.app:app", "--host", "0.0.0.0", "--port", "7860"]

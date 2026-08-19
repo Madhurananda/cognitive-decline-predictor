@@ -1,24 +1,20 @@
-FROM node:18-alpine AS builder
-
+FROM node:20-alpine AS builder
 WORKDIR /app
 
-# Copy dependencies and build
-COPY package.json package-lock.json ./
-RUN npm ci --only=production
+COPY package*.json ./
+RUN npm ci
 
 COPY . .
 RUN npm run build
 
-# Production server
-FROM node:18-alpine
-
+FROM node:20-alpine AS runner
 WORKDIR /app
 
-COPY --from=builder /app/.next ./.next
+ENV NODE_ENV production
+
+COPY --from=builder /app/.next/standalone ./
+COPY --from=builder /app/.next/static ./.next/static
 COPY --from=builder /app/public ./public
-COPY --from=builder /app/node_modules ./node_modules
-COPY --from=builder /app/package.json ./package.json
 
 EXPOSE 3000
-
-CMD ["npm", "start"]
+CMD ["node", "server.js"]

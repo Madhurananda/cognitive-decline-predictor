@@ -12,10 +12,9 @@ import numpy as np
 import pandas as pd
 import librosa
 import spacy
-import whisper
 import subprocess
 import tempfile
-from collections import defaultdict  # <-- NEW
+from collections import defaultdict
 from fastapi import FastAPI, File, UploadFile, HTTPException, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -26,6 +25,8 @@ from dotenv import load_dotenv
 import uvicorn
 from typing import List, Dict, Optional
 import warnings
+import groq  # NEW: Groq for ASR
+
 warnings.filterwarnings("ignore")
 
 # ============================================
@@ -37,8 +38,6 @@ load_dotenv()
 # Configuration
 # ============================================
 MODEL_DIR = "models"
-WHISPER_MODEL = "base"
-# WHISPER_MODEL = "medium"
 MAX_AUDIO_DURATION = 180  # 3 minutes
 MIN_AUDIO_DURATION = 10   # 10 seconds
 
@@ -72,8 +71,12 @@ except Exception as e:
 nlp = spacy.load("en_core_web_sm")
 print("✅ spaCy loaded")
 
-whisper_model = whisper.load_model(WHISPER_MODEL)
-print(f"✅ Whisper {WHISPER_MODEL} loaded")
+# ---- Initialize Groq client ----
+groq_api_key = os.getenv("GROQ_API_KEY")
+if not groq_api_key:
+    print("⚠️ GROQ_API_KEY not found. ASR will fail.")
+groq_client = groq.Groq(api_key=groq_api_key)
+print("✅ Groq client initialized")
 
 # ============================================
 # Initialize LangChain (Azure OpenAI / Phi-4)
@@ -144,7 +147,7 @@ else:
     explanation_chain = None
 
 # ============================================
-# Helper: Convert to WAV
+# Helper: Convert to WAV (for librosa and Groq)
 # ============================================
 def convert_to_wav(input_bytes):
     """Convert any audio bytes to a proper 16kHz mono WAV file using ffmpeg."""
@@ -396,17 +399,14 @@ MAX_USAGE_PER_IP = 3
 
 @app.middleware("http")
 async def limit_usage_middleware(request: Request, call_next):
-    # Get client IP
     client_ip = request.client.host
     forwarded = request.headers.get("X-Forwarded-For")
     if forwarded:
         client_ip = forwarded.split(",")[0].strip()
     
-    # Skip tracking for health and root
     if request.url.path in ["/health", "/"]:
         return await call_next(request)
     
-    # Check limit
     if usage_tracker[client_ip] >= MAX_USAGE_PER_IP:
         return JSONResponse(
             status_code=429,
@@ -415,10 +415,7 @@ async def limit_usage_middleware(request: Request, call_next):
             }
         )
     
-    # Process request
     response = await call_next(request)
-    
-    # Increment only on successful predictions (status 200)
     if response.status_code == 200:
         usage_tracker[client_ip] += 1
     
@@ -468,6 +465,7 @@ async def predict(file: UploadFile = File(...)):
         
         wav_path = convert_to_wav(audio_bytes)
         
+        # Check duration
         y, sr = librosa.load(wav_path, sr=16000)
         duration = len(y) / sr
         
@@ -489,8 +487,21 @@ async def predict(file: UploadFile = File(...)):
                 detail=f"Audio too short ({duration:.1f}s). Please record at least {MIN_AUDIO_DURATION} seconds."
             )
         
-        result = whisper_model.transcribe(wav_path, language="en", fp16=False)
-        transcript = result["text"]
+        # ---- Transcribe using Groq ----
+        if not groq_api_key:
+            raise HTTPException(
+                status_code=500,
+                detail="GROQ_API_KEY not configured on server."
+            )
+        
+        with open(wav_path, "rb") as audio_file:
+            transcription = groq_client.audio.transcriptions.create(
+                file=audio_file,
+                model="whisper-large-v3",  # or "whisper-large-v3-turbo"
+                language="en",
+                response_format="text"
+            )
+        transcript = transcription
         
         if not transcript or not transcript.strip():
             raise HTTPException(
@@ -505,6 +516,7 @@ async def predict(file: UploadFile = File(...)):
                 detail=f"Too little speech detected ({word_count} words). Please speak for at least 10 seconds with clear description."
             )
         
+        # ---- Feature extraction and prediction ----
         features = extract_features_from_path(wav_path, transcript)
         if features is None:
             raise HTTPException(
@@ -555,4 +567,6 @@ async def predict(file: UploadFile = File(...)):
 # Run the app
 # ============================================
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    # Render sets the PORT environment variable, but we default to 7860
+    port = int(os.getenv("PORT", 7860))
+    uvicorn.run(app, host="0.0.0.0", port=port)
