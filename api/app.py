@@ -556,23 +556,19 @@ async def predict_stream(file: UploadFile = File(...)):
             
             spider_data = compute_spider_data(feature_dict)
             
-            # Step 8: Complete
-            yield f"data: {json.dumps({
-                'step': 'complete',
-                'progress': 100,
-                'message': '✅ Analysis complete!',
-                'result': {
-                    'prediction': int(prediction),
-                    'result': result_text,
-                    'risk_score': float(risk_score),
-                    'confidence': float(confidence),
-                    'transcript': transcript,
-                    'duration_seconds': duration,
-                    'explanation': explanation,
-                    'spider_data': spider_data,
-                    'features': feature_dict
-                }
-            })}\n\n"
+            # Step 8: Complete – fix the f‑string syntax by constructing the dict first
+            result_payload = {
+                'prediction': int(prediction),
+                'result': result_text,
+                'risk_score': float(risk_score),
+                'confidence': float(confidence),
+                'transcript': transcript,
+                'duration_seconds': duration,
+                'explanation': explanation,
+                'spider_data': spider_data,
+                'features': feature_dict
+            }
+            yield f"data: {json.dumps({'step': 'complete', 'progress': 100, 'message': '✅ Analysis complete!', 'result': result_payload})}\n\n"
             
         except Exception as e:
             yield f"data: {json.dumps({'step': 'error', 'message': f'Error: {str(e)}'})}\n\n"
