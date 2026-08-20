@@ -14,7 +14,6 @@ import librosa
 import spacy
 import subprocess
 import tempfile
-from collections import defaultdict
 from fastapi import FastAPI, File, UploadFile, HTTPException, Request, Header, Depends
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -28,6 +27,14 @@ import warnings
 import groq
 import json
 import asyncio
+
+# ---- Rate Limiting ----
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+
+# ---- Redis ----
+import redis
 
 warnings.filterwarnings("ignore")
 
@@ -152,6 +159,47 @@ if llm:
     explanation_chain = LLMChain(llm=llm, prompt=explanation_prompt)
 else:
     explanation_chain = None
+
+# ============================================
+# Redis Connection
+# ============================================
+REDIS_URL = os.getenv("REDIS_URL")
+redis_client = None
+
+if REDIS_URL:
+    try:
+        redis_client = redis.from_url(
+            REDIS_URL,
+            decode_responses=True,
+            ssl_cert_reqs=None  # For Upstash with TLS
+        )
+        # Test connection
+        redis_client.ping()
+        print(f"✅ Redis connected successfully")
+    except Exception as e:
+        print(f"⚠️ Redis connection failed: {e}")
+        redis_client = None
+else:
+    print("⚠️ REDIS_URL not found. Using in-memory fallback.")
+
+# ---- Fallback: In-memory tracker (if Redis is not available) ----
+usage_tracker = {}
+
+def get_usage_count(ip: str) -> int:
+    """Get usage count from Redis or fallback to memory."""
+    if redis_client:
+        count = redis_client.get(f"usage:{ip}")
+        return int(count) if count else 0
+    return usage_tracker.get(ip, 0)
+
+def increment_usage_count(ip: str) -> int:
+    """Increment usage count in Redis or fallback to memory."""
+    if redis_client:
+        new_count = redis_client.incr(f"usage:{ip}")
+        redis_client.expire(f"usage:{ip}", 86400)  # Reset after 24 hours
+        return new_count
+    usage_tracker[ip] = usage_tracker.get(ip, 0) + 1
+    return usage_tracker[ip]
 
 # ============================================
 # Helper: Convert to WAV
@@ -396,6 +444,19 @@ async def verify_api_key(x_api_key: str = Header(...)):
     return True
 
 # ============================================
+# Rate Limiting - Get Real IP (for Cloud Run)
+# ============================================
+def get_real_ip(request: Request):
+    """
+    Extract the real client IP from the request.
+    Cloud Run forwards the original IP in X-Forwarded-For.
+    """
+    forwarded = request.headers.get("X-Forwarded-For")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host
+
+# ============================================
 # FastAPI App
 # ============================================
 app = FastAPI(
@@ -404,13 +465,18 @@ app = FastAPI(
     version="1.0.0"
 )
 
+# ---- Rate Limiter ----
+limiter = Limiter(key_func=get_real_ip)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
 # ============================================
 # CORS Configuration (Restricted to Vercel)
 # ============================================
 origins = [
-    "https://cognitive-decline-predictor-7qco-neon.vercel.app",  # Production Vercel domain
-    "http://localhost:3000",        # Local testing
-    "https://cognitive-decline-predictor-7qco-neon.vercel.app/",  # With trailing slash
+    "https://cognitive-decline-predictor-7qco-neon.vercel.app",
+    "http://localhost:3000",
+    "https://cognitive-decline-predictor-7qco-neon.vercel.app/",
 ]
 
 app.add_middleware(
@@ -422,22 +488,21 @@ app.add_middleware(
 )
 
 # ============================================
-# Usage Limit Middleware (3 attempts per IP)
+# Usage Limit Middleware (with Redis)
 # ============================================
-usage_tracker = defaultdict(int)
-MAX_USAGE_PER_IP = 3
+MAX_USAGE_PER_IP = 999  # Change this to your desired limit
 
 @app.middleware("http")
 async def limit_usage_middleware(request: Request, call_next):
-    client_ip = request.client.host
-    forwarded = request.headers.get("X-Forwarded-For")
-    if forwarded:
-        client_ip = forwarded.split(",")[0].strip()
+    client_ip = get_real_ip(request)
     
     if request.url.path in ["/health", "/"]:
         return await call_next(request)
     
-    if usage_tracker[client_ip] >= MAX_USAGE_PER_IP:
+    # Check current usage
+    current_count = get_usage_count(client_ip)
+    
+    if current_count >= MAX_USAGE_PER_IP:
         return JSONResponse(
             status_code=429,
             content={
@@ -446,8 +511,10 @@ async def limit_usage_middleware(request: Request, call_next):
         )
     
     response = await call_next(request)
+    
+    # Increment only on successful predictions (status 200)
     if response.status_code == 200:
-        usage_tracker[client_ip] += 1
+        increment_usage_count(client_ip)
     
     return response
 
@@ -471,10 +538,11 @@ async def health():
     return {"status": "healthy", "model_loaded": model is not None}
 
 # ============================================
-# Streaming prediction endpoint (with API key)
+# Streaming prediction endpoint (with Rate Limiting)
 # ============================================
 @app.post("/predict-stream", dependencies=[Depends(verify_api_key)])
-async def predict_stream(file: UploadFile = File(...)):
+@limiter.limit("3/day")  # Rate limit: 3 requests per day per IP
+async def predict_stream(request: Request, file: UploadFile = File(...)):
     """Stream progress updates during prediction."""
     
     async def event_generator():
@@ -484,12 +552,10 @@ async def predict_stream(file: UploadFile = File(...)):
             yield f"data: {json.dumps({'step': 'starting', 'message': '🚀 Waking up service...', 'progress': 5})}\n\n"
             await asyncio.sleep(0.1)
             
-            # Validate file
             if not file.filename.endswith(('.wav', '.mp3', '.m4a')):
                 yield f"data: {json.dumps({'step': 'error', 'message': 'File must be a WAV, MP3, or M4A audio file'})}\n\n"
                 return
             
-            # Step 1: Read and convert audio
             yield f"data: {json.dumps({'step': 'converting', 'message': '🔊 Converting audio format...', 'progress': 10})}\n\n"
             await asyncio.sleep(0.1)
             
@@ -504,7 +570,6 @@ async def predict_stream(file: UploadFile = File(...)):
             
             wav_path = convert_to_wav(audio_bytes)
             
-            # Step 2: Check duration
             yield f"data: {json.dumps({'step': 'validating', 'message': '⏱️ Validating audio duration...', 'progress': 20})}\n\n"
             await asyncio.sleep(0.1)
             
@@ -519,7 +584,6 @@ async def predict_stream(file: UploadFile = File(...)):
                 yield f"data: {json.dumps({'step': 'error', 'message': f'Audio too short ({duration:.1f}s). Please record at least {MIN_AUDIO_DURATION} seconds.'})}\n\n"
                 return
             
-            # Step 3: Transcribe with Groq
             yield f"data: {json.dumps({'step': 'transcribing', 'message': '🎤 Transcribing speech with Groq AI...', 'progress': 35})}\n\n"
             await asyncio.sleep(0.1)
             
@@ -545,7 +609,6 @@ async def predict_stream(file: UploadFile = File(...)):
                 yield f"data: {json.dumps({'step': 'error', 'message': f'Too little speech detected ({word_count} words). Please speak for at least 10 seconds.'})}\n\n"
                 return
             
-            # Step 4: Extract features
             yield f"data: {json.dumps({'step': 'features', 'message': '📊 Extracting acoustic and linguistic features...', 'progress': 55})}\n\n"
             await asyncio.sleep(0.1)
             
@@ -554,7 +617,6 @@ async def predict_stream(file: UploadFile = File(...)):
                 yield f"data: {json.dumps({'step': 'error', 'message': 'Failed to extract features from audio.'})}\n\n"
                 return
             
-            # Step 5: Predict
             yield f"data: {json.dumps({'step': 'predicting', 'message': '🧠 Running cognitive decline prediction model...', 'progress': 75})}\n\n"
             await asyncio.sleep(0.1)
             
@@ -572,19 +634,16 @@ async def predict_stream(file: UploadFile = File(...)):
             
             feature_dict = {col: float(features[0, i]) for i, col in enumerate(feature_cols)}
             
-            # Step 6: Generate explanation
             yield f"data: {json.dumps({'step': 'explaining', 'message': '🤖 Generating AI explanation...', 'progress': 88})}\n\n"
             await asyncio.sleep(0.1)
             
             explanation = generate_explanation(risk_score, transcript, feature_dict)
             
-            # Step 7: Spider diagram
             yield f"data: {json.dumps({'step': 'spider', 'message': '📈 Creating spider diagram...', 'progress': 95})}\n\n"
             await asyncio.sleep(0.1)
             
             spider_data = compute_spider_data(feature_dict)
             
-            # Step 8: Complete
             result_payload = {
                 'prediction': int(prediction),
                 'result': result_text,
@@ -607,10 +666,13 @@ async def predict_stream(file: UploadFile = File(...)):
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 # ============================================
-# Non-streaming prediction endpoint (with API key)
+# Non-streaming prediction endpoint (with Rate Limiting)
 # ============================================
 @app.post("/predict", dependencies=[Depends(verify_api_key)])
-async def predict(file: UploadFile = File(...)):
+@limiter.limit("3/day")   # Current
+# @limiter.limit("1/hour")  # Strict
+# @limiter.limit("10/day")  # More generous
+async def predict(request: Request, file: UploadFile = File(...)):
     if not file.filename.endswith(('.wav', '.mp3', '.m4a')):
         raise HTTPException(
             status_code=400,

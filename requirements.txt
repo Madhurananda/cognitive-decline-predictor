@@ -3,10 +3,13 @@ uvicorn
 python-multipart
 librosa
 spacy
-openai-whisper
+groq
 joblib
 numpy
 pandas
 langchain
 langchain-openai
 python-dotenv
+langchain_classic
+slowapi
+redis
