@@ -1,0 +1,30 @@
+steps:
+  # Step 1: Build the container image
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'build'
+      - '-t'
+      - 'gcr.io/$PROJECT_ID/github.com/madhurananda/cognitive-decline-predictor:$COMMIT_SHA'
+      - '-f'
+      - 'api/Dockerfile'
+      - '.'
+
+  # Step 2: Push the image to Google Container Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'push'
+      - 'gcr.io/$PROJECT_ID/github.com/madhurananda/cognitive-decline-predictor:$COMMIT_SHA'
+
+  # Step 3: Automatically deploy the image to Cloud Run
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args:
+      - 'run'
+      - 'deploy'
+      - 'cognitive-decline-predictor'
+      - '--image=gcr.io/$PROJECT_ID/github.com/madhurananda/cognitive-decline-predictor:$COMMIT_SHA'
+      - '--region=europe-west1'
+      - '--platform=managed'
+
+images:
+  - 'gcr.io/$PROJECT_ID/github.com/madhurananda/cognitive-decline-predictor:$COMMIT_SHA'
