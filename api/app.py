@@ -568,49 +568,67 @@ async def predict_stream(request: Request, file: UploadFile = File(...)):
     async def event_generator():
         wav_path = None
         try:
+            # ---- Check for client disconnection early ----
+            if await request.is_disconnected():
+                print("🛑 Client disconnected before processing started.")
+                return
+
             # Step 0: Starting
             yield f"data: {json.dumps({'step': 'starting', 'message': '🚀 Waking up service...', 'progress': 5})}\n\n"
             await asyncio.sleep(0.1)
-            
+            if await request.is_disconnected():
+                print("🛑 Client disconnected after initializing.")
+                return
+
             if not file.filename.endswith(('.wav', '.mp3', '.m4a')):
                 yield f"data: {json.dumps({'step': 'error', 'message': 'File must be a WAV, MP3, or M4A audio file'})}\n\n"
                 return
-            
+
             yield f"data: {json.dumps({'step': 'converting', 'message': '🔊 Converting audio format...', 'progress': 10})}\n\n"
             await asyncio.sleep(0.1)
-            
+            if await request.is_disconnected():
+                print("🛑 Client disconnected during conversion.")
+                return
+
             audio_bytes = await file.read()
             if len(audio_bytes) == 0:
                 yield f"data: {json.dumps({'step': 'error', 'message': 'The uploaded audio file is empty.'})}\n\n"
                 return
-            
+
             if len(audio_bytes) > 30 * 1024 * 1024:
                 yield f"data: {json.dumps({'step': 'error', 'message': 'Audio file too large. Maximum size is 30 MB.'})}\n\n"
                 return
-            
+
             wav_path = convert_to_wav(audio_bytes)
-            
+
             yield f"data: {json.dumps({'step': 'validating', 'message': '⏱️ Validating audio duration...', 'progress': 20})}\n\n"
             await asyncio.sleep(0.1)
-            
+            if await request.is_disconnected():
+                print("🛑 Client disconnected during validation.")
+                return
+
             y, sr = librosa.load(wav_path, sr=16000)
             duration = len(y) / sr
-            
+
             if duration > MAX_AUDIO_DURATION:
                 yield f"data: {json.dumps({'step': 'error', 'message': f'Audio duration ({duration:.1f}s) exceeds maximum of {MAX_AUDIO_DURATION}s'})}\n\n"
                 return
-            
+
             if duration < MIN_AUDIO_DURATION:
                 yield f"data: {json.dumps({'step': 'error', 'message': f'Audio too short ({duration:.1f}s). Please record at least {MIN_AUDIO_DURATION} seconds.'})}\n\n"
                 return
-            
+
             yield f"data: {json.dumps({'step': 'transcribing', 'message': '🎤 Transcribing speech with Groq AI...', 'progress': 35})}\n\n"
             await asyncio.sleep(0.1)
-            
+            if await request.is_disconnected():
+                print("🛑 Client disconnected before transcription.")
+                return
+
             if not groq_api_key:
                 yield f"data: {json.dumps({'step': 'error', 'message': 'GROQ_API_KEY not configured.'})}\n\n"
                 return
-            
+
+            # ---- Long-running transcription ----
             with open(wav_path, "rb") as audio_file:
                 transcription = groq_client.audio.transcriptions.create(
                     file=audio_file,
@@ -619,51 +637,75 @@ async def predict_stream(request: Request, file: UploadFile = File(...)):
                     response_format="text"
                 )
             transcript = transcription
-            
+
+            # Check after transcription (could be long)
+            if await request.is_disconnected():
+                print("🛑 Client disconnected after transcription.")
+                return
+
             if not transcript or not transcript.strip():
                 yield f"data: {json.dumps({'step': 'error', 'message': 'No speech detected. Please speak clearly.'})}\n\n"
                 return
-            
+
             word_count = len(transcript.split())
             if word_count < 5:
                 yield f"data: {json.dumps({'step': 'error', 'message': f'Too little speech detected ({word_count} words). Please speak for at least 10 seconds.'})}\n\n"
                 return
-            
+
             yield f"data: {json.dumps({'step': 'features', 'message': '📊 Extracting acoustic and linguistic features...', 'progress': 55})}\n\n"
             await asyncio.sleep(0.1)
-            
+            if await request.is_disconnected():
+                print("🛑 Client disconnected before feature extraction.")
+                return
+
             features = extract_features_from_path(wav_path, transcript)
             if features is None:
                 yield f"data: {json.dumps({'step': 'error', 'message': 'Failed to extract features from audio.'})}\n\n"
                 return
-            
+
             yield f"data: {json.dumps({'step': 'predicting', 'message': '🧠 Running cognitive decline prediction model...', 'progress': 75})}\n\n"
             await asyncio.sleep(0.1)
-            
+            if await request.is_disconnected():
+                print("🛑 Client disconnected before prediction.")
+                return
+
             features_scaled = scaler.transform(features)
             prediction = model.predict(features_scaled)[0]
             probability = model.predict_proba(features_scaled)[0]
             risk_score = probability[1]
-            
+
             if prediction == 0:
                 result_text = "Low Risk"
                 confidence = probability[0]
             else:
                 result_text = "High Risk"
                 confidence = probability[1]
-            
+
             feature_dict = {col: float(features[0, i]) for i, col in enumerate(feature_cols)}
-            
+
             yield f"data: {json.dumps({'step': 'explaining', 'message': '🤖 Generating AI explanation...', 'progress': 88})}\n\n"
             await asyncio.sleep(0.1)
-            
-            explanation = generate_explanation(risk_score, transcript, feature_dict)
-            
+            if await request.is_disconnected():
+                print("🛑 Client disconnected before LLM call.")
+                return
+
+            # ---- Run blocking LLM call in background thread ----
+            explanation = await asyncio.to_thread(
+                generate_explanation, risk_score, transcript, feature_dict
+            )
+
+            if await request.is_disconnected():
+                print("🛑 Client disconnected after explanation.")
+                return
+
             yield f"data: {json.dumps({'step': 'spider', 'message': '📈 Creating spider diagram...', 'progress': 95})}\n\n"
             await asyncio.sleep(0.1)
-            
+            if await request.is_disconnected():
+                print("🛑 Client disconnected before spider data.")
+                return
+
             spider_data = compute_spider_data(feature_dict)
-            
+
             result_payload = {
                 'prediction': int(prediction),
                 'result': result_text,
@@ -676,74 +718,81 @@ async def predict_stream(request: Request, file: UploadFile = File(...)):
                 'features': feature_dict
             }
             yield f"data: {json.dumps({'step': 'complete', 'progress': 100, 'message': '✅ Analysis complete!', 'result': result_payload})}\n\n"
-            
+
         except Exception as e:
             yield f"data: {json.dumps({'step': 'error', 'message': f'Error: {str(e)}'})}\n\n"
         finally:
             if wav_path and os.path.exists(wav_path):
                 os.unlink(wav_path)
-    
-    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+    # ---- Headers to disable proxy buffering ----
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",  # Disables proxy buffering (Cloud Run, nginx)
+            "Connection": "keep-alive",
+        }
+    )
 
 # ============================================
 # Non-streaming prediction endpoint (with Rate Limiting)
 # ============================================
 @app.post("/predict", dependencies=[Depends(verify_api_key)])
-@limiter.limit("10/day")   # Current
-# @limiter.limit("1/hour")  # Strict
-# @limiter.limit("10/day")  # More generous
+@limiter.limit("10/day")
 async def predict(request: Request, file: UploadFile = File(...)):
     if not file.filename.endswith(('.wav', '.mp3', '.m4a')):
         raise HTTPException(
             status_code=400,
             detail="File must be a WAV, MP3, or M4A audio file"
         )
-    
+
     wav_path = None
     try:
         audio_bytes = await file.read()
-        
+
         if len(audio_bytes) == 0:
             raise HTTPException(
                 status_code=400,
                 detail="The uploaded audio file is empty."
             )
-        
+
         if len(audio_bytes) > 30 * 1024 * 1024:
             raise HTTPException(
                 status_code=413,
                 detail="Audio file too large. Maximum size is 30 MB."
             )
-        
+
         wav_path = convert_to_wav(audio_bytes)
-        
+
         y, sr = librosa.load(wav_path, sr=16000)
         duration = len(y) / sr
-        
+
         if len(y) == 0:
             raise HTTPException(
                 status_code=400,
                 detail="The audio contains no audible data."
             )
-        
+
         if duration > MAX_AUDIO_DURATION:
             raise HTTPException(
                 status_code=413,
                 detail=f"Audio duration ({duration:.1f}s) exceeds maximum of {MAX_AUDIO_DURATION}s"
             )
-        
+
         if duration < MIN_AUDIO_DURATION:
             raise HTTPException(
                 status_code=400,
                 detail=f"Audio too short ({duration:.1f}s). Please record at least {MIN_AUDIO_DURATION} seconds."
             )
-        
+
         if not groq_api_key:
             raise HTTPException(
                 status_code=500,
                 detail="GROQ_API_KEY not configured on server."
             )
-        
+
         with open(wav_path, "rb") as audio_file:
             transcription = groq_client.audio.transcriptions.create(
                 file=audio_file,
@@ -752,43 +801,47 @@ async def predict(request: Request, file: UploadFile = File(...)):
                 response_format="text"
             )
         transcript = transcription
-        
+
         if not transcript or not transcript.strip():
             raise HTTPException(
                 status_code=400,
                 detail="No speech detected. Please ensure you are speaking clearly into the microphone."
             )
-        
+
         word_count = len(transcript.split())
         if word_count < 5:
             raise HTTPException(
                 status_code=400,
                 detail=f"Too little speech detected ({word_count} words). Please speak for at least 10 seconds with clear description."
             )
-        
+
         features = extract_features_from_path(wav_path, transcript)
         if features is None:
             raise HTTPException(
                 status_code=400,
                 detail="Failed to extract features from audio. Please ensure the recording contains clear speech."
             )
-        
+
         features_scaled = scaler.transform(features)
         prediction = model.predict(features_scaled)[0]
         probability = model.predict_proba(features_scaled)[0]
         risk_score = probability[1]
-        
+
         if prediction == 0:
             result_text = "Low Risk"
             confidence = probability[0]
         else:
             result_text = "High Risk"
             confidence = probability[1]
-        
+
         feature_dict = {col: float(features[0, i]) for i, col in enumerate(feature_cols)}
-        explanation = generate_explanation(risk_score, transcript, feature_dict)
+
+        # ---- Run blocking LLM call in background thread ----
+        explanation = await asyncio.to_thread(
+            generate_explanation, risk_score, transcript, feature_dict
+        )
         spider_data = compute_spider_data(feature_dict)
-        
+
         return {
             "prediction": int(prediction),
             "result": result_text,
@@ -800,7 +853,7 @@ async def predict(request: Request, file: UploadFile = File(...)):
             "spider_data": spider_data,
             "features": feature_dict
         }
-        
+
     except HTTPException:
         raise
     except Exception as e:
