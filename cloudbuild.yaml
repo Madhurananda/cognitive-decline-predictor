@@ -28,3 +28,7 @@ steps:
 
 images:
   - 'gcr.io/$PROJECT_ID/github.com/madhurananda/cognitive-decline-predictor:$COMMIT_SHA'
+
+# Tells Cloud Build to send logs directly to Google Cloud Logging
+options:
+  logging: CLOUD_LOGGING_ONLY
