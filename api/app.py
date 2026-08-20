@@ -12,6 +12,7 @@ import joblib
 import numpy as np
 import pandas as pd
 import librosa
+import soundfile as sf
 import spacy
 import subprocess
 import tempfile
@@ -58,7 +59,7 @@ load_dotenv()
 # Configuration
 # ============================================
 MODEL_DIR = "models"
-MAX_AUDIO_DURATION = 180  # 3 minutes
+MAX_AUDIO_DURATION = 120  # <<< Changed from 180 to 120 (2 minutes)
 MIN_AUDIO_DURATION = 10   # 10 seconds
 
 # Features for spider diagram
@@ -601,13 +602,11 @@ async def predict_stream(request: Request, file: UploadFile = File(...)):
     async def event_generator():
         wav_path = None
         try:
-            # ---- Check for client disconnection early ----
             if await request.is_disconnected():
                 log_step("🛑 Client disconnected before processing started.")
                 return
 
             log_step("🚀 Starting prediction stream")
-            # Step 0: Starting
             yield f"data: {json.dumps({'step': 'starting', 'message': '🚀 Waking up service...', 'progress': 5})}\n\n"
             await asyncio.sleep(0.1)
             if await request.is_disconnected():
@@ -644,9 +643,10 @@ async def predict_stream(request: Request, file: UploadFile = File(...)):
                 log_step("🛑 Client disconnected during validation.")
                 return
 
-            log_step("⏱️ Loading audio for duration check")
-            y, sr = librosa.load(wav_path, sr=16000)
-            duration = len(y) / sr
+            # ---- NEW: Instant duration check with soundfile ----
+            log_step("⏱️ Checking audio duration (instant)")
+            info = sf.info(wav_path)
+            duration = info.duration
             log_step(f"⏱️ Audio duration: {duration:.2f}s")
 
             if duration > MAX_AUDIO_DURATION:
@@ -667,7 +667,6 @@ async def predict_stream(request: Request, file: UploadFile = File(...)):
                 yield f"data: {json.dumps({'step': 'error', 'message': 'GROQ_API_KEY not configured.'})}\n\n"
                 return
 
-            # ---- Long-running transcription ----
             log_step("🎤 Starting Groq transcription")
             with open(wav_path, "rb") as audio_file:
                 transcription = groq_client.audio.transcriptions.create(
@@ -679,7 +678,6 @@ async def predict_stream(request: Request, file: UploadFile = File(...)):
             transcript = transcription
             log_step(f"🎤 Transcription completed. Word count: {len(transcript.split())}")
 
-            # Check after transcription (could be long)
             if await request.is_disconnected():
                 log_step("🛑 Client disconnected after transcription.")
                 return
@@ -734,7 +732,6 @@ async def predict_stream(request: Request, file: UploadFile = File(...)):
                 log_step("🛑 Client disconnected before LLM call.")
                 return
 
-            # ---- Run blocking LLM call in background thread ----
             log_step("🤖 Starting LLM explanation (asyncio.to_thread)")
             explanation = await asyncio.to_thread(
                 generate_explanation, risk_score, transcript, feature_dict
@@ -774,6 +771,11 @@ async def predict_stream(request: Request, file: UploadFile = File(...)):
             yield f"data: {json.dumps({'step': 'complete', 'progress': 100, 'message': '✅ Analysis complete!', 'result': result_payload})}\n\n"
             log_step("✅ Complete event yielded")
 
+            # ---- Extra flush: send an empty newline and a dummy event ----
+            yield b"\n"  # extra newline to flush
+            yield f"data: {json.dumps({'step': 'flush'})}\n\n"
+            log_step("📤 Sent extra flush event")
+
         except Exception as e:
             log_step(f"❌ Exception in event_generator: {e}", "error")
             yield f"data: {json.dumps({'step': 'error', 'message': f'Error: {str(e)}'})}\n\n"
@@ -787,9 +789,9 @@ async def predict_stream(request: Request, file: UploadFile = File(...)):
         event_generator(),
         media_type="text/event-stream",
         headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",  # Disables proxy buffering (Cloud Run, nginx)
-            "Connection": "keep-alive",
+            "Cache-Control": "no-cache, no-store",
+            "X-Accel-Buffering": "no",
+            "Connection": "close",  # force connection close after response
         }
     )
 
@@ -825,16 +827,10 @@ async def predict(request: Request, file: UploadFile = File(...)):
         log_step("🔄 /predict: converting audio")
         wav_path = convert_to_wav(audio_bytes)
 
-        log_step("⏱️ /predict: loading audio")
-        y, sr = librosa.load(wav_path, sr=16000)
-        duration = len(y) / sr
+        log_step("⏱️ /predict: checking duration (instant)")
+        info = sf.info(wav_path)
+        duration = info.duration
         log_step(f"⏱️ /predict: duration={duration:.2f}s")
-
-        if len(y) == 0:
-            raise HTTPException(
-                status_code=400,
-                detail="The audio contains no audible data."
-            )
 
         if duration > MAX_AUDIO_DURATION:
             raise HTTPException(

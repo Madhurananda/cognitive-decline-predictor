@@ -221,6 +221,9 @@ export default function Home() {
     }
   };
 
+  // ============================================================
+  // UPDATED handleSubmit with robust SSE parsing and error handling
+  // ============================================================
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (!file) {
@@ -238,7 +241,6 @@ export default function Home() {
     formData.append('file', file);
 
     try {
-      // Use the streaming endpoint with API key
       const response = await fetch(`${API_URL}/predict-stream`, {
         method: 'POST',
         headers: {
@@ -294,14 +296,21 @@ export default function Home() {
                 return [...prev, { step: data.step, message: data.message, progress: data.progress }];
               });
               
-            } catch (e) {
-              console.error('Failed to parse SSE data:', e);
+            } catch (parseErr) {
+              // ----- CRITICAL FIX: catch JSON parsing errors -----
+              console.error('❌ Failed to parse SSE JSON:', parseErr);
+              console.error('Raw data:', jsonStr);
+              setError('Received malformed data from server. Please try again.');
+              setLoading(false);
+              return;
             }
           }
         }
       }
     } catch (err) {
-      setError(err.message);
+      // Catch network / fetch errors
+      console.error('Network or fetch error:', err);
+      setError(err.message || 'Network error. Please check your connection.');
       setLoading(false);
     }
   };
