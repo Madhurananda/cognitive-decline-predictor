@@ -11,3 +11,5 @@ langchain
 langchain-openai
 python-dotenv
 langchain_classic
+slowapi
+redis
