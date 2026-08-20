@@ -6,6 +6,7 @@ Created on Thu Aug  6 15:33:35 2026
 """
 
 import os
+import sys
 import io
 import joblib
 import numpy as np
@@ -27,7 +28,16 @@ import warnings
 import groq
 import json
 import asyncio
-import time  # added for logging
+import time
+import logging
+
+# ---- Configure logging ----
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
+logger = logging.getLogger(__name__)
 
 # ---- Rate Limiting ----
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -62,11 +72,19 @@ SPIDER_FEATURES = [
 ]
 
 # ============================================
-# Logging helper with timestamp
+# Logging helper with timestamp and flush
 # ============================================
-def log_step(msg):
-    """Print a timestamped log message."""
-    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}")
+def log_step(msg, level="info"):
+    """Log a message with timestamp and severity, then flush."""
+    if level == "info":
+        logger.info(msg)
+    elif level == "warning":
+        logger.warning(msg)
+    elif level == "error":
+        logger.error(msg)
+    else:
+        logger.info(msg)
+    sys.stdout.flush()
 
 # ============================================
 # Load Artifacts at Startup
@@ -83,7 +101,7 @@ try:
     normative_stats = joblib.load(f"{MODEL_DIR}/normative_stats.pkl")
     log_step("✅ Normative stats loaded")
 except Exception as e:
-    log_step(f"⚠️ Normative stats not found: {e}")
+    log_step(f"⚠️ Normative stats not found: {e}", "warning")
 
 nlp = spacy.load("en_core_web_sm")
 log_step("✅ spaCy loaded")
@@ -91,14 +109,14 @@ log_step("✅ spaCy loaded")
 # ---- Initialize Groq client ----
 groq_api_key = os.getenv("GROQ_API_KEY")
 if not groq_api_key:
-    log_step("⚠️ GROQ_API_KEY not found. ASR will fail.")
+    log_step("⚠️ GROQ_API_KEY not found. ASR will fail.", "warning")
 groq_client = groq.Groq(api_key=groq_api_key)
 log_step("✅ Groq client initialized")
 
 # ---- API Key for authentication ----
 API_KEY = os.getenv("X_APP_API_KEY")
 if not API_KEY:
-    log_step("⚠️ X_APP_API_KEY not found. API authentication will fail.")
+    log_step("⚠️ X_APP_API_KEY not found. API authentication will fail.", "warning")
 
 # ============================================
 # Initialize LangChain (Azure OpenAI / Phi-4)
@@ -118,10 +136,10 @@ if azure_endpoint and azure_api_key and azure_deployment:
         )
         log_step(f"✅ LangChain initialized with deployment: {azure_deployment}")
     except Exception as e:
-        log_step(f"⚠️ Error initializing LangChain: {e}")
+        log_step(f"⚠️ Error initializing LangChain: {e}", "warning")
         llm = None
 else:
-    log_step("⚠️ Azure OpenAI credentials not found. Explanations disabled.")
+    log_step("⚠️ Azure OpenAI credentials not found. Explanations disabled.", "warning")
     llm = None
 
 # ============================================
@@ -185,13 +203,13 @@ if REDIS_URL and (REDIS_URL.startswith("redis://") or REDIS_URL.startswith("redi
         redis_client.ping()
         log_step("✅ Redis connected successfully")
     except Exception as e:
-        log_step(f"⚠️ Redis connection failed: {e}")
+        log_step(f"⚠️ Redis connection failed: {e}", "warning")
         redis_client = None
 else:
     if REDIS_URL:
-        log_step(f"⚠️ REDIS_URL has unsupported scheme (use redis:// or rediss://). Falling back to in-memory.")
+        log_step(f"⚠️ REDIS_URL has unsupported scheme (use redis:// or rediss://). Falling back to in-memory.", "warning")
     else:
-        log_step("⚠️ REDIS_URL not found. Using in-memory fallback.")
+        log_step("⚠️ REDIS_URL not found. Using in-memory fallback.", "warning")
 
 # ---- Fallback: In-memory tracker (if Redis is not available) ----
 usage_tracker = {}
@@ -242,7 +260,7 @@ def convert_to_wav(input_bytes):
         subprocess.run(cmd, check=True, capture_output=True, timeout=30)
         return output_path
     except Exception as e:
-        log_step(f"FFmpeg conversion failed: {e}")
+        log_step(f"FFmpeg conversion failed: {e}", "error")
         with open(output_path, 'wb') as f:
             f.write(input_bytes)
         return output_path
@@ -304,7 +322,7 @@ def extract_acoustic_features(audio_path):
             'shimmer': shimmer
         }
     except Exception as e:
-        log_step(f"Error in acoustic extraction: {e}")
+        log_step(f"Error in acoustic extraction: {e}", "error")
         return None
 
 def extract_linguistic_features(text):
@@ -372,7 +390,7 @@ def extract_features_from_path(audio_path, transcript):
         feature_values = [features.get(col, 0) for col in feature_cols]
         return np.array(feature_values).reshape(1, -1)
     except Exception as e:
-        log_step(f"Error extracting features: {e}")
+        log_step(f"Error extracting features: {e}", "error")
         return None
 
 # ============================================
@@ -381,7 +399,7 @@ def extract_features_from_path(audio_path, transcript):
 def generate_explanation(risk_score, transcript, features):
     log_step("📝 generate_explanation: START")
     if explanation_chain is None:
-        log_step("⚠️ explanation_chain is None, returning fallback.")
+        log_step("⚠️ explanation_chain is None, returning fallback.", "warning")
         return "Explanation unavailable. Please contact the developer."
     
     risk_text = "High" if risk_score > 0.5 else "Low"
@@ -406,7 +424,7 @@ def generate_explanation(risk_score, transcript, features):
         log_step("📝 LLMChain.run() completed successfully.")
         return explanation
     except Exception as e:
-        log_step(f"❌ Error generating explanation: {e}")
+        log_step(f"❌ Error generating explanation: {e}", "error")
         return "Explanation temporarily unavailable. Please consult a healthcare professional."
 
 # ============================================
@@ -493,7 +511,7 @@ if REDIS_URL and (REDIS_URL.startswith("redis://") or REDIS_URL.startswith("redi
     log_step("✅ Configuring slowapi with Redis storage")
 else:
     storage_uri = "memory://"
-    log_step("⚠️ Using in-memory storage for rate limiting")
+    log_step("⚠️ Using in-memory storage for rate limiting", "warning")
 
 limiter = Limiter(key_func=get_real_ip, storage_uri=storage_uri)
 app.state.limiter = limiter
@@ -539,7 +557,7 @@ async def limit_usage_middleware(request: Request, call_next):
                 }
             )
     except Exception as e:
-        log_step(f"⚠️ Error checking usage limit: {e}")
+        log_step(f"⚠️ Error checking usage limit: {e}", "warning")
         # Continue anyway to avoid blocking legitimate requests
     
     response = await call_next(request)
@@ -549,7 +567,7 @@ async def limit_usage_middleware(request: Request, call_next):
         try:
             increment_usage_count(client_ip)
         except Exception as e:
-            log_step(f"⚠️ Failed to increment usage count: {e}")
+            log_step(f"⚠️ Failed to increment usage count: {e}", "warning")
     
     return response
 
@@ -757,7 +775,7 @@ async def predict_stream(request: Request, file: UploadFile = File(...)):
             log_step("✅ Complete event yielded")
 
         except Exception as e:
-            log_step(f"❌ Exception in event_generator: {e}")
+            log_step(f"❌ Exception in event_generator: {e}", "error")
             yield f"data: {json.dumps({'step': 'error', 'message': f'Error: {str(e)}'})}\n\n"
         finally:
             if wav_path and os.path.exists(wav_path):
@@ -907,7 +925,7 @@ async def predict(request: Request, file: UploadFile = File(...)):
     except HTTPException:
         raise
     except Exception as e:
-        log_step(f"❌ /predict error: {e}")
+        log_step(f"❌ /predict error: {e}", "error")
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Prediction error: {str(e)}")
