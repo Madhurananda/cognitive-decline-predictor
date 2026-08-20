@@ -27,6 +27,7 @@ import warnings
 import groq
 import json
 import asyncio
+import time  # added for logging
 
 # ---- Rate Limiting ----
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -61,36 +62,43 @@ SPIDER_FEATURES = [
 ]
 
 # ============================================
+# Logging helper with timestamp
+# ============================================
+def log_step(msg):
+    """Print a timestamped log message."""
+    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}")
+
+# ============================================
 # Load Artifacts at Startup
 # ============================================
-print("Loading artifacts...")
+log_step("Loading artifacts...")
 
 model = joblib.load(f"{MODEL_DIR}/cognitive_model.pkl")
 scaler = joblib.load(f"{MODEL_DIR}/scaler.pkl")
 feature_cols = joblib.load(f"{MODEL_DIR}/feature_columns.pkl")
-print(f"✅ Loaded model with {len(feature_cols)} features")
+log_step(f"✅ Loaded model with {len(feature_cols)} features")
 
 normative_stats = None
 try:
     normative_stats = joblib.load(f"{MODEL_DIR}/normative_stats.pkl")
-    print("✅ Normative stats loaded")
+    log_step("✅ Normative stats loaded")
 except Exception as e:
-    print(f"⚠️ Normative stats not found: {e}")
+    log_step(f"⚠️ Normative stats not found: {e}")
 
 nlp = spacy.load("en_core_web_sm")
-print("✅ spaCy loaded")
+log_step("✅ spaCy loaded")
 
 # ---- Initialize Groq client ----
 groq_api_key = os.getenv("GROQ_API_KEY")
 if not groq_api_key:
-    print("⚠️ GROQ_API_KEY not found. ASR will fail.")
+    log_step("⚠️ GROQ_API_KEY not found. ASR will fail.")
 groq_client = groq.Groq(api_key=groq_api_key)
-print("✅ Groq client initialized")
+log_step("✅ Groq client initialized")
 
 # ---- API Key for authentication ----
 API_KEY = os.getenv("X_APP_API_KEY")
 if not API_KEY:
-    print("⚠️ X_APP_API_KEY not found. API authentication will fail.")
+    log_step("⚠️ X_APP_API_KEY not found. API authentication will fail.")
 
 # ============================================
 # Initialize LangChain (Azure OpenAI / Phi-4)
@@ -108,12 +116,12 @@ if azure_endpoint and azure_api_key and azure_deployment:
             deployment_name=azure_deployment,
             temperature=0.1
         )
-        print(f"✅ LangChain initialized with deployment: {azure_deployment}")
+        log_step(f"✅ LangChain initialized with deployment: {azure_deployment}")
     except Exception as e:
-        print(f"⚠️ Error initializing LangChain: {e}")
+        log_step(f"⚠️ Error initializing LangChain: {e}")
         llm = None
 else:
-    print("⚠️ Azure OpenAI credentials not found. Explanations disabled.")
+    log_step("⚠️ Azure OpenAI credentials not found. Explanations disabled.")
     llm = None
 
 # ============================================
@@ -161,26 +169,29 @@ else:
     explanation_chain = None
 
 # ============================================
-# Redis Connection (Resilient)
+# Redis Connection (Resilient) with scheme validation
 # ============================================
 REDIS_URL = os.getenv("REDIS_URL")
 redis_client = None
 
-if REDIS_URL:
+# Only attempt to connect if the URL has a valid Redis scheme
+if REDIS_URL and (REDIS_URL.startswith("redis://") or REDIS_URL.startswith("rediss://")):
     try:
         redis_client = redis.from_url(
             REDIS_URL,
             decode_responses=True,
-            ssl_cert_reqs=None  # For Upstash with TLS
+            ssl_cert_reqs=None
         )
-        # Test connection
         redis_client.ping()
-        print(f"✅ Redis connected successfully")
+        log_step("✅ Redis connected successfully")
     except Exception as e:
-        print(f"⚠️ Redis connection failed: {e}")
+        log_step(f"⚠️ Redis connection failed: {e}")
         redis_client = None
 else:
-    print("⚠️ REDIS_URL not found. Using in-memory fallback.")
+    if REDIS_URL:
+        log_step(f"⚠️ REDIS_URL has unsupported scheme (use redis:// or rediss://). Falling back to in-memory.")
+    else:
+        log_step("⚠️ REDIS_URL not found. Using in-memory fallback.")
 
 # ---- Fallback: In-memory tracker (if Redis is not available) ----
 usage_tracker = {}
@@ -231,7 +242,7 @@ def convert_to_wav(input_bytes):
         subprocess.run(cmd, check=True, capture_output=True, timeout=30)
         return output_path
     except Exception as e:
-        print(f"FFmpeg conversion failed: {e}")
+        log_step(f"FFmpeg conversion failed: {e}")
         with open(output_path, 'wb') as f:
             f.write(input_bytes)
         return output_path
@@ -293,7 +304,7 @@ def extract_acoustic_features(audio_path):
             'shimmer': shimmer
         }
     except Exception as e:
-        print(f"Error in acoustic extraction: {e}")
+        log_step(f"Error in acoustic extraction: {e}")
         return None
 
 def extract_linguistic_features(text):
@@ -361,19 +372,22 @@ def extract_features_from_path(audio_path, transcript):
         feature_values = [features.get(col, 0) for col in feature_cols]
         return np.array(feature_values).reshape(1, -1)
     except Exception as e:
-        print(f"Error extracting features: {e}")
+        log_step(f"Error extracting features: {e}")
         return None
 
 # ============================================
 # Explanation Function
 # ============================================
 def generate_explanation(risk_score, transcript, features):
+    log_step("📝 generate_explanation: START")
     if explanation_chain is None:
+        log_step("⚠️ explanation_chain is None, returning fallback.")
         return "Explanation unavailable. Please contact the developer."
     
     risk_text = "High" if risk_score > 0.5 else "Low"
     
     try:
+        log_step("📝 Calling LLMChain.run()...")
         explanation = explanation_chain.run(
             risk_score=risk_score,
             risk_text=risk_text,
@@ -389,9 +403,10 @@ def generate_explanation(risk_score, transcript, features):
             repetition_rate=features.get('repetition_rate', 0),
             pitch_std=features.get('pitch_std', 0)
         )
+        log_step("📝 LLMChain.run() completed successfully.")
         return explanation
     except Exception as e:
-        print(f"Error generating explanation: {e}")
+        log_step(f"❌ Error generating explanation: {e}")
         return "Explanation temporarily unavailable. Please consult a healthcare professional."
 
 # ============================================
@@ -475,10 +490,10 @@ app = FastAPI(
 # Configure storage URI from environment; fallback to memory
 if REDIS_URL and (REDIS_URL.startswith("redis://") or REDIS_URL.startswith("rediss://")):
     storage_uri = REDIS_URL
-    print("✅ Configuring slowapi with Redis storage")
+    log_step("✅ Configuring slowapi with Redis storage")
 else:
     storage_uri = "memory://"
-    print("⚠️ Using in-memory storage for rate limiting")
+    log_step("⚠️ Using in-memory storage for rate limiting")
 
 limiter = Limiter(key_func=get_real_ip, storage_uri=storage_uri)
 app.state.limiter = limiter
@@ -524,7 +539,7 @@ async def limit_usage_middleware(request: Request, call_next):
                 }
             )
     except Exception as e:
-        print(f"⚠️ Error checking usage limit: {e}")
+        log_step(f"⚠️ Error checking usage limit: {e}")
         # Continue anyway to avoid blocking legitimate requests
     
     response = await call_next(request)
@@ -534,7 +549,7 @@ async def limit_usage_middleware(request: Request, call_next):
         try:
             increment_usage_count(client_ip)
         except Exception as e:
-            print(f"⚠️ Failed to increment usage count: {e}")
+            log_step(f"⚠️ Failed to increment usage count: {e}")
     
     return response
 
@@ -570,14 +585,15 @@ async def predict_stream(request: Request, file: UploadFile = File(...)):
         try:
             # ---- Check for client disconnection early ----
             if await request.is_disconnected():
-                print("🛑 Client disconnected before processing started.")
+                log_step("🛑 Client disconnected before processing started.")
                 return
 
+            log_step("🚀 Starting prediction stream")
             # Step 0: Starting
             yield f"data: {json.dumps({'step': 'starting', 'message': '🚀 Waking up service...', 'progress': 5})}\n\n"
             await asyncio.sleep(0.1)
             if await request.is_disconnected():
-                print("🛑 Client disconnected after initializing.")
+                log_step("🛑 Client disconnected after initializing.")
                 return
 
             if not file.filename.endswith(('.wav', '.mp3', '.m4a')):
@@ -587,9 +603,10 @@ async def predict_stream(request: Request, file: UploadFile = File(...)):
             yield f"data: {json.dumps({'step': 'converting', 'message': '🔊 Converting audio format...', 'progress': 10})}\n\n"
             await asyncio.sleep(0.1)
             if await request.is_disconnected():
-                print("🛑 Client disconnected during conversion.")
+                log_step("🛑 Client disconnected during conversion.")
                 return
 
+            log_step("📥 Reading audio bytes")
             audio_bytes = await file.read()
             if len(audio_bytes) == 0:
                 yield f"data: {json.dumps({'step': 'error', 'message': 'The uploaded audio file is empty.'})}\n\n"
@@ -599,16 +616,20 @@ async def predict_stream(request: Request, file: UploadFile = File(...)):
                 yield f"data: {json.dumps({'step': 'error', 'message': 'Audio file too large. Maximum size is 30 MB.'})}\n\n"
                 return
 
+            log_step("🔄 Converting audio to WAV")
             wav_path = convert_to_wav(audio_bytes)
+            log_step("✅ Audio conversion done")
 
             yield f"data: {json.dumps({'step': 'validating', 'message': '⏱️ Validating audio duration...', 'progress': 20})}\n\n"
             await asyncio.sleep(0.1)
             if await request.is_disconnected():
-                print("🛑 Client disconnected during validation.")
+                log_step("🛑 Client disconnected during validation.")
                 return
 
+            log_step("⏱️ Loading audio for duration check")
             y, sr = librosa.load(wav_path, sr=16000)
             duration = len(y) / sr
+            log_step(f"⏱️ Audio duration: {duration:.2f}s")
 
             if duration > MAX_AUDIO_DURATION:
                 yield f"data: {json.dumps({'step': 'error', 'message': f'Audio duration ({duration:.1f}s) exceeds maximum of {MAX_AUDIO_DURATION}s'})}\n\n"
@@ -621,7 +642,7 @@ async def predict_stream(request: Request, file: UploadFile = File(...)):
             yield f"data: {json.dumps({'step': 'transcribing', 'message': '🎤 Transcribing speech with Groq AI...', 'progress': 35})}\n\n"
             await asyncio.sleep(0.1)
             if await request.is_disconnected():
-                print("🛑 Client disconnected before transcription.")
+                log_step("🛑 Client disconnected before transcription.")
                 return
 
             if not groq_api_key:
@@ -629,6 +650,7 @@ async def predict_stream(request: Request, file: UploadFile = File(...)):
                 return
 
             # ---- Long-running transcription ----
+            log_step("🎤 Starting Groq transcription")
             with open(wav_path, "rb") as audio_file:
                 transcription = groq_client.audio.transcriptions.create(
                     file=audio_file,
@@ -637,10 +659,11 @@ async def predict_stream(request: Request, file: UploadFile = File(...)):
                     response_format="text"
                 )
             transcript = transcription
+            log_step(f"🎤 Transcription completed. Word count: {len(transcript.split())}")
 
             # Check after transcription (could be long)
             if await request.is_disconnected():
-                print("🛑 Client disconnected after transcription.")
+                log_step("🛑 Client disconnected after transcription.")
                 return
 
             if not transcript or not transcript.strip():
@@ -655,24 +678,28 @@ async def predict_stream(request: Request, file: UploadFile = File(...)):
             yield f"data: {json.dumps({'step': 'features', 'message': '📊 Extracting acoustic and linguistic features...', 'progress': 55})}\n\n"
             await asyncio.sleep(0.1)
             if await request.is_disconnected():
-                print("🛑 Client disconnected before feature extraction.")
+                log_step("🛑 Client disconnected before feature extraction.")
                 return
 
+            log_step("📊 Extracting features")
             features = extract_features_from_path(wav_path, transcript)
             if features is None:
                 yield f"data: {json.dumps({'step': 'error', 'message': 'Failed to extract features from audio.'})}\n\n"
                 return
+            log_step("✅ Features extracted")
 
             yield f"data: {json.dumps({'step': 'predicting', 'message': '🧠 Running cognitive decline prediction model...', 'progress': 75})}\n\n"
             await asyncio.sleep(0.1)
             if await request.is_disconnected():
-                print("🛑 Client disconnected before prediction.")
+                log_step("🛑 Client disconnected before prediction.")
                 return
 
+            log_step("🧠 Scaling features and predicting")
             features_scaled = scaler.transform(features)
             prediction = model.predict(features_scaled)[0]
             probability = model.predict_proba(features_scaled)[0]
             risk_score = probability[1]
+            log_step(f"🧠 Prediction: {prediction}, risk_score: {risk_score:.3f}")
 
             if prediction == 0:
                 result_text = "Low Risk"
@@ -686,25 +713,33 @@ async def predict_stream(request: Request, file: UploadFile = File(...)):
             yield f"data: {json.dumps({'step': 'explaining', 'message': '🤖 Generating AI explanation...', 'progress': 88})}\n\n"
             await asyncio.sleep(0.1)
             if await request.is_disconnected():
-                print("🛑 Client disconnected before LLM call.")
+                log_step("🛑 Client disconnected before LLM call.")
                 return
 
             # ---- Run blocking LLM call in background thread ----
+            log_step("🤖 Starting LLM explanation (asyncio.to_thread)")
             explanation = await asyncio.to_thread(
                 generate_explanation, risk_score, transcript, feature_dict
             )
+            log_step("✅ LLM explanation completed")
 
             if await request.is_disconnected():
-                print("🛑 Client disconnected after explanation.")
+                log_step("🛑 Client disconnected after explanation.")
                 return
 
             yield f"data: {json.dumps({'step': 'spider', 'message': '📈 Creating spider diagram...', 'progress': 95})}\n\n"
             await asyncio.sleep(0.1)
             if await request.is_disconnected():
-                print("🛑 Client disconnected before spider data.")
+                log_step("🛑 Client disconnected before spider data.")
                 return
 
+            log_step("📈 Computing spider data")
             spider_data = compute_spider_data(feature_dict)
+            log_step("✅ Spider data computed")
+
+            # ---- Heartbeat event to flush buffer ----
+            yield f"data: {json.dumps({'step': 'finalizing', 'progress': 98, 'message': '⏳ Wrapping up...'})}\n\n"
+            await asyncio.sleep(0.05)
 
             result_payload = {
                 'prediction': int(prediction),
@@ -717,13 +752,17 @@ async def predict_stream(request: Request, file: UploadFile = File(...)):
                 'spider_data': spider_data,
                 'features': feature_dict
             }
+            log_step("📦 Yielding final complete event")
             yield f"data: {json.dumps({'step': 'complete', 'progress': 100, 'message': '✅ Analysis complete!', 'result': result_payload})}\n\n"
+            log_step("✅ Complete event yielded")
 
         except Exception as e:
+            log_step(f"❌ Exception in event_generator: {e}")
             yield f"data: {json.dumps({'step': 'error', 'message': f'Error: {str(e)}'})}\n\n"
         finally:
             if wav_path and os.path.exists(wav_path):
                 os.unlink(wav_path)
+                log_step("🗑️ Cleaned up temporary WAV file")
 
     # ---- Headers to disable proxy buffering ----
     return StreamingResponse(
@@ -750,6 +789,7 @@ async def predict(request: Request, file: UploadFile = File(...)):
 
     wav_path = None
     try:
+        log_step("📥 /predict: reading audio")
         audio_bytes = await file.read()
 
         if len(audio_bytes) == 0:
@@ -764,10 +804,13 @@ async def predict(request: Request, file: UploadFile = File(...)):
                 detail="Audio file too large. Maximum size is 30 MB."
             )
 
+        log_step("🔄 /predict: converting audio")
         wav_path = convert_to_wav(audio_bytes)
 
+        log_step("⏱️ /predict: loading audio")
         y, sr = librosa.load(wav_path, sr=16000)
         duration = len(y) / sr
+        log_step(f"⏱️ /predict: duration={duration:.2f}s")
 
         if len(y) == 0:
             raise HTTPException(
@@ -793,6 +836,7 @@ async def predict(request: Request, file: UploadFile = File(...)):
                 detail="GROQ_API_KEY not configured on server."
             )
 
+        log_step("🎤 /predict: transcribing with Groq")
         with open(wav_path, "rb") as audio_file:
             transcription = groq_client.audio.transcriptions.create(
                 file=audio_file,
@@ -801,6 +845,7 @@ async def predict(request: Request, file: UploadFile = File(...)):
                 response_format="text"
             )
         transcript = transcription
+        log_step(f"🎤 /predict: transcription done, word_count={len(transcript.split())}")
 
         if not transcript or not transcript.strip():
             raise HTTPException(
@@ -815,6 +860,7 @@ async def predict(request: Request, file: UploadFile = File(...)):
                 detail=f"Too little speech detected ({word_count} words). Please speak for at least 10 seconds with clear description."
             )
 
+        log_step("📊 /predict: extracting features")
         features = extract_features_from_path(wav_path, transcript)
         if features is None:
             raise HTTPException(
@@ -822,10 +868,12 @@ async def predict(request: Request, file: UploadFile = File(...)):
                 detail="Failed to extract features from audio. Please ensure the recording contains clear speech."
             )
 
+        log_step("🧠 /predict: scaling and predicting")
         features_scaled = scaler.transform(features)
         prediction = model.predict(features_scaled)[0]
         probability = model.predict_proba(features_scaled)[0]
         risk_score = probability[1]
+        log_step(f"🧠 /predict: prediction={prediction}, risk={risk_score:.3f}")
 
         if prediction == 0:
             result_text = "Low Risk"
@@ -836,12 +884,14 @@ async def predict(request: Request, file: UploadFile = File(...)):
 
         feature_dict = {col: float(features[0, i]) for i, col in enumerate(feature_cols)}
 
-        # ---- Run blocking LLM call in background thread ----
+        log_step("🤖 /predict: generating explanation via asyncio.to_thread")
         explanation = await asyncio.to_thread(
             generate_explanation, risk_score, transcript, feature_dict
         )
+        log_step("✅ /predict: explanation done")
         spider_data = compute_spider_data(feature_dict)
 
+        log_step("✅ /predict: returning response")
         return {
             "prediction": int(prediction),
             "result": result_text,
@@ -857,13 +907,14 @@ async def predict(request: Request, file: UploadFile = File(...)):
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Error in prediction: {e}")
+        log_step(f"❌ /predict error: {e}")
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Prediction error: {str(e)}")
     finally:
         if wav_path and os.path.exists(wav_path):
             os.unlink(wav_path)
+            log_step("🗑️ /predict: cleaned up temp WAV")
 
 # ============================================
 # Run the app
