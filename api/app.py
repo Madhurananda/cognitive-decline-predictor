@@ -161,7 +161,7 @@ else:
     explanation_chain = None
 
 # ============================================
-# Redis Connection
+# Redis Connection (Resilient)
 # ============================================
 REDIS_URL = os.getenv("REDIS_URL")
 redis_client = None
@@ -186,18 +186,24 @@ else:
 usage_tracker = {}
 
 def get_usage_count(ip: str) -> int:
-    """Get usage count from Redis or fallback to memory."""
+    """Get usage count from Redis or fallback to memory (no exceptions)."""
     if redis_client:
-        count = redis_client.get(f"usage:{ip}")
-        return int(count) if count else 0
+        try:
+            count = redis_client.get(f"usage:{ip}")
+            return int(count) if count else 0
+        except Exception:
+            pass  # fall through to memory
     return usage_tracker.get(ip, 0)
 
 def increment_usage_count(ip: str) -> int:
-    """Increment usage count in Redis or fallback to memory."""
+    """Increment usage count in Redis or fallback to memory (no exceptions)."""
     if redis_client:
-        new_count = redis_client.incr(f"usage:{ip}")
-        redis_client.expire(f"usage:{ip}", 86400)  # Reset after 24 hours
-        return new_count
+        try:
+            new_count = redis_client.incr(f"usage:{ip}")
+            redis_client.expire(f"usage:{ip}", 86400)  # Reset after 24 hours
+            return new_count
+        except Exception:
+            pass  # fall through to memory
     usage_tracker[ip] = usage_tracker.get(ip, 0) + 1
     return usage_tracker[ip]
 
@@ -465,8 +471,16 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# ---- Rate Limiter ----
-limiter = Limiter(key_func=get_real_ip)
+# ---- Rate Limiter (Resilient storage) ----
+# Configure storage URI from environment; fallback to memory
+if REDIS_URL and (REDIS_URL.startswith("redis://") or REDIS_URL.startswith("rediss://")):
+    storage_uri = REDIS_URL
+    print("✅ Configuring slowapi with Redis storage")
+else:
+    storage_uri = "memory://"
+    print("⚠️ Using in-memory storage for rate limiting")
+
+limiter = Limiter(key_func=get_real_ip, storage_uri=storage_uri)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
@@ -488,33 +502,39 @@ app.add_middleware(
 )
 
 # ============================================
-# Usage Limit Middleware (with Redis)
+# Usage Limit Middleware (Resilient)
 # ============================================
 MAX_USAGE_PER_IP = 999  # Change this to your desired limit
 
 @app.middleware("http")
 async def limit_usage_middleware(request: Request, call_next):
-    client_ip = get_real_ip(request)
-    
+    # Always allow health and root endpoints
     if request.url.path in ["/health", "/"]:
         return await call_next(request)
     
-    # Check current usage
-    current_count = get_usage_count(client_ip)
+    client_ip = get_real_ip(request)
     
-    if current_count >= MAX_USAGE_PER_IP:
-        return JSONResponse(
-            status_code=429,
-            content={
-                "detail": f"Usage limit reached. Maximum {MAX_USAGE_PER_IP} attempts allowed for this demo."
-            }
-        )
+    try:
+        current_count = get_usage_count(client_ip)
+        if current_count >= MAX_USAGE_PER_IP:
+            return JSONResponse(
+                status_code=429,
+                content={
+                    "detail": f"Usage limit reached. Maximum {MAX_USAGE_PER_IP} attempts allowed for this demo."
+                }
+            )
+    except Exception as e:
+        print(f"⚠️ Error checking usage limit: {e}")
+        # Continue anyway to avoid blocking legitimate requests
     
     response = await call_next(request)
     
     # Increment only on successful predictions (status 200)
     if response.status_code == 200:
-        increment_usage_count(client_ip)
+        try:
+            increment_usage_count(client_ip)
+        except Exception as e:
+            print(f"⚠️ Failed to increment usage count: {e}")
     
     return response
 
@@ -541,7 +561,7 @@ async def health():
 # Streaming prediction endpoint (with Rate Limiting)
 # ============================================
 @app.post("/predict-stream", dependencies=[Depends(verify_api_key)])
-@limiter.limit("3/day")  # Rate limit: 3 requests per day per IP
+@limiter.limit("10/day")  # Rate limit: 10 requests per day per IP
 async def predict_stream(request: Request, file: UploadFile = File(...)):
     """Stream progress updates during prediction."""
     
@@ -669,7 +689,7 @@ async def predict_stream(request: Request, file: UploadFile = File(...)):
 # Non-streaming prediction endpoint (with Rate Limiting)
 # ============================================
 @app.post("/predict", dependencies=[Depends(verify_api_key)])
-@limiter.limit("3/day")   # Current
+@limiter.limit("10/day")   # Current
 # @limiter.limit("1/hour")  # Strict
 # @limiter.limit("10/day")  # More generous
 async def predict(request: Request, file: UploadFile = File(...)):
