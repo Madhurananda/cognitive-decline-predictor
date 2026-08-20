@@ -384,10 +384,16 @@ app = FastAPI(
     version="1.0.0"
 )
 
+# Only allow requests originating from your Vercel URL
+origins = [
+    "https://cognitive-decline-predictor-7qco-neon.vercel.app/",  # Production Vercel domain
+    "http://localhost:3000",        # Local testing
+]
+
 # CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
