@@ -5,6 +5,7 @@ import Welcome from './components/Welcome';
 import SpiderChart from './components/SpiderChart';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+const API_KEY = process.env.NEXT_PUBLIC_X_API_KEY || '';
 
 export default function Home() {
   const [accepted, setAccepted] = useState(false);
@@ -237,11 +238,18 @@ export default function Home() {
     formData.append('file', file);
 
     try {
-      // Use the streaming endpoint
+      // Use the streaming endpoint with API key
       const response = await fetch(`${API_URL}/predict-stream`, {
         method: 'POST',
+        headers: {
+          'x-api-key': API_KEY,
+        },
         body: formData,
       });
+
+      if (response.status === 403) {
+        throw new Error('Unauthorized: Invalid API key or source.');
+      }
 
       if (!response.ok) {
         const err = await response.json();

@@ -15,7 +15,7 @@ import spacy
 import subprocess
 import tempfile
 from collections import defaultdict
-from fastapi import FastAPI, File, UploadFile, HTTPException, Request
+from fastapi import FastAPI, File, UploadFile, HTTPException, Request, Header, Depends
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from langchain_openai import AzureChatOpenAI
@@ -79,6 +79,11 @@ if not groq_api_key:
     print("⚠️ GROQ_API_KEY not found. ASR will fail.")
 groq_client = groq.Groq(api_key=groq_api_key)
 print("✅ Groq client initialized")
+
+# ---- API Key for authentication ----
+API_KEY = os.getenv("X_APP_API_KEY")
+if not API_KEY:
+    print("⚠️ X_APP_API_KEY not found. API authentication will fail.")
 
 # ============================================
 # Initialize LangChain (Azure OpenAI / Phi-4)
@@ -376,6 +381,21 @@ def compute_spider_data(features):
     return spider_data
 
 # ============================================
+# API Key Verification Dependency
+# ============================================
+async def verify_api_key(x_api_key: str = Header(...)):
+    """
+    Verify that the request contains a valid API key.
+    """
+    if not API_KEY:
+        raise HTTPException(status_code=500, detail="API key not configured on server.")
+    
+    if x_api_key != API_KEY:
+        raise HTTPException(status_code=403, detail="Unauthorized request source.")
+    
+    return True
+
+# ============================================
 # FastAPI App
 # ============================================
 app = FastAPI(
@@ -384,18 +404,20 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# Only allow requests originating from your Vercel URL
+# ============================================
+# CORS Configuration (Restricted to Vercel)
+# ============================================
 origins = [
-    "https://cognitive-decline-predictor-7qco-neon.vercel.app/",  # Production Vercel domain
+    "https://cognitive-decline-predictor-7qco-neon.vercel.app",  # Production Vercel domain
     "http://localhost:3000",        # Local testing
+    "https://cognitive-decline-predictor-7qco-neon.vercel.app/",  # With trailing slash
 ]
 
-# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
 
@@ -438,8 +460,8 @@ async def root():
         "message": "Cognitive Decline Predictor API",
         "version": "1.0.0",
         "endpoints": {
-            "/predict": "POST - Upload audio file for prediction",
-            "/predict-stream": "POST - Stream progress for prediction",
+            "/predict": "POST - Upload audio file for prediction (requires API key)",
+            "/predict-stream": "POST - Stream progress for prediction (requires API key)",
             "/health": "GET - Check API health"
         }
     }
@@ -449,9 +471,9 @@ async def health():
     return {"status": "healthy", "model_loaded": model is not None}
 
 # ============================================
-# Streaming prediction endpoint
+# Streaming prediction endpoint (with API key)
 # ============================================
-@app.post("/predict-stream")
+@app.post("/predict-stream", dependencies=[Depends(verify_api_key)])
 async def predict_stream(file: UploadFile = File(...)):
     """Stream progress updates during prediction."""
     
@@ -562,7 +584,7 @@ async def predict_stream(file: UploadFile = File(...)):
             
             spider_data = compute_spider_data(feature_dict)
             
-            # Step 8: Complete – fix the f‑string syntax by constructing the dict first
+            # Step 8: Complete
             result_payload = {
                 'prediction': int(prediction),
                 'result': result_text,
@@ -585,9 +607,9 @@ async def predict_stream(file: UploadFile = File(...)):
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 # ============================================
-# Non-streaming prediction endpoint (kept for compatibility)
+# Non-streaming prediction endpoint (with API key)
 # ============================================
-@app.post("/predict")
+@app.post("/predict", dependencies=[Depends(verify_api_key)])
 async def predict(file: UploadFile = File(...)):
     if not file.filename.endswith(('.wav', '.mp3', '.m4a')):
         raise HTTPException(
