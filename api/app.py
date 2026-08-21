@@ -8,6 +8,7 @@ Created on Thu Aug  6 15:33:35 2026
 import os
 import sys
 import io
+import re  # <-- NEW for cleaning LLM output
 import joblib
 import numpy as np
 import pandas as pd
@@ -59,7 +60,7 @@ load_dotenv()
 # Configuration
 # ============================================
 MODEL_DIR = "models"
-MAX_AUDIO_DURATION = 120  # <<< Changed from 180 to 120 (2 minutes)
+MAX_AUDIO_DURATION = 180  # 3 minutes
 MIN_AUDIO_DURATION = 10   # 10 seconds
 
 # Features for spider diagram
@@ -86,6 +87,21 @@ def log_step(msg, level="info"):
     else:
         logger.info(msg)
     sys.stdout.flush()
+
+# ============================================
+# Clean LLM output for SSE safety
+# ============================================
+def clean_llm_explanation(text: str) -> str:
+    """
+    Remove <think> tags and replace newlines with spaces to avoid SSE breakage.
+    """
+    if not text:
+        return ""
+    # Remove <think>...</think> blocks (including all content inside)
+    cleaned = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
+    # Replace literal newlines and carriage returns with spaces
+    cleaned = cleaned.replace('\n', ' ').replace('\r', ' ').strip()
+    return cleaned
 
 # ============================================
 # Load Artifacts at Startup
@@ -643,7 +659,7 @@ async def predict_stream(request: Request, file: UploadFile = File(...)):
                 log_step("🛑 Client disconnected during validation.")
                 return
 
-            # ---- NEW: Instant duration check with soundfile ----
+            # ---- Instant duration check with soundfile ----
             log_step("⏱️ Checking audio duration (instant)")
             info = sf.info(wav_path)
             duration = info.duration
@@ -738,6 +754,10 @@ async def predict_stream(request: Request, file: UploadFile = File(...)):
             )
             log_step("✅ LLM explanation completed")
 
+            # ---- Clean the explanation ----
+            clean_explanation = clean_llm_explanation(explanation)
+            log_step("🧹 Explanation cleaned of <think> tags and newlines")
+
             if await request.is_disconnected():
                 log_step("🛑 Client disconnected after explanation.")
                 return
@@ -756,6 +776,7 @@ async def predict_stream(request: Request, file: UploadFile = File(...)):
             yield f"data: {json.dumps({'step': 'finalizing', 'progress': 98, 'message': '⏳ Wrapping up...'})}\n\n"
             await asyncio.sleep(0.05)
 
+            # ---- Build result payload with cleaned explanation ----
             result_payload = {
                 'prediction': int(prediction),
                 'result': result_text,
@@ -763,16 +784,25 @@ async def predict_stream(request: Request, file: UploadFile = File(...)):
                 'confidence': float(confidence),
                 'transcript': transcript,
                 'duration_seconds': duration,
-                'explanation': explanation,
+                'explanation': clean_explanation,   # <-- cleaned
                 'spider_data': spider_data,
                 'features': feature_dict
             }
+
+            # ---- Convert entire payload to single-line JSON string ----
+            json_str = json.dumps({
+                'step': 'complete',
+                'progress': 100,
+                'message': '✅ Analysis complete!',
+                'result': result_payload
+            }, ensure_ascii=True).replace('\n', '')  # remove any newlines
+
             log_step("📦 Yielding final complete event")
-            yield f"data: {json.dumps({'step': 'complete', 'progress': 100, 'message': '✅ Analysis complete!', 'result': result_payload})}\n\n"
+            yield f"data: {json_str}\n\n"
             log_step("✅ Complete event yielded")
 
-            # ---- Extra flush: send an empty newline and a dummy event ----
-            yield b"\n"  # extra newline to flush
+            # ---- Extra flush events ----
+            yield b"\n"
             yield f"data: {json.dumps({'step': 'flush'})}\n\n"
             log_step("📤 Sent extra flush event")
 
@@ -791,7 +821,7 @@ async def predict_stream(request: Request, file: UploadFile = File(...)):
         headers={
             "Cache-Control": "no-cache, no-store",
             "X-Accel-Buffering": "no",
-            "Connection": "close",  # force connection close after response
+            "Connection": "close",
         }
     )
 
@@ -903,6 +933,10 @@ async def predict(request: Request, file: UploadFile = File(...)):
             generate_explanation, risk_score, transcript, feature_dict
         )
         log_step("✅ /predict: explanation done")
+
+        # ---- Clean the explanation ----
+        clean_explanation = clean_llm_explanation(explanation)
+
         spider_data = compute_spider_data(feature_dict)
 
         log_step("✅ /predict: returning response")
@@ -913,7 +947,7 @@ async def predict(request: Request, file: UploadFile = File(...)):
             "confidence": float(confidence),
             "transcript": transcript,
             "duration_seconds": duration,
-            "explanation": explanation,
+            "explanation": clean_explanation,   # <-- cleaned
             "spider_data": spider_data,
             "features": feature_dict
         }
