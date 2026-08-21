@@ -17,7 +17,6 @@ export default function Home() {
   const [recordingDuration, setRecordingDuration] = useState(0);
   const [inputSource, setInputSource] = useState(null);
   
-  // New state for progress
   const [progress, setProgress] = useState(0);
   const [progressMessages, setProgressMessages] = useState([]);
 
@@ -32,7 +31,6 @@ export default function Home() {
   const dataArrayRef = useRef(null);
   const isRecordingRef = useRef(false);
 
-  // Cleanup
   const cleanupRecording = useCallback(() => {
     if (animationRef.current) {
       cancelAnimationFrame(animationRef.current);
@@ -222,7 +220,7 @@ export default function Home() {
   };
 
   // ============================================================
-  // UPDATED handleSubmit with robust SSE parsing and error handling
+  // FIXED handleSubmit with buffered SSE parser
   // ============================================================
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -260,55 +258,66 @@ export default function Home() {
 
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
+      let buffer = '';
 
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
 
-        const chunk = decoder.decode(value);
-        const lines = chunk.split('\n');
-        
-        for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            const jsonStr = line.substring(6);
-            try {
-              const data = JSON.parse(jsonStr);
-              
-              if (data.step === 'error') {
-                setError(data.message);
-                setLoading(false);
-                return;
-              }
-              
-              if (data.step === 'complete') {
-                setResult(data.result);
-                setLoading(false);
-                return;
-              }
-              
-              // Update progress
-              setProgress(data.progress || 0);
-              
-              // Add message if not already present
-              setProgressMessages(prev => {
-                const exists = prev.some(msg => msg.step === data.step);
-                if (exists) return prev;
-                return [...prev, { step: data.step, message: data.message, progress: data.progress }];
-              });
-              
-            } catch (parseErr) {
-              // ----- CRITICAL FIX: catch JSON parsing errors -----
-              console.error('❌ Failed to parse SSE JSON:', parseErr);
-              console.error('Raw data:', jsonStr);
-              setError('Received malformed data from server. Please try again.');
+        // Append new data to the buffer
+        buffer += decoder.decode(value, { stream: true });
+
+        // Split by double newline (SSE event delimiter)
+        const events = buffer.split('\n\n');
+        // Keep the last incomplete part in buffer
+        buffer = events.pop() || '';
+
+        for (const event of events) {
+          const lines = event.split('\n');
+          let dataLine = null;
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              dataLine = line.substring(6);
+              break;
+            }
+          }
+          if (!dataLine) continue;
+
+          try {
+            const data = JSON.parse(dataLine);
+            
+            if (data.step === 'error') {
+              setError(data.message);
               setLoading(false);
               return;
             }
+            
+            if (data.step === 'complete') {
+              setResult(data.result);
+              setLoading(false);
+              return;
+            }
+            
+            // Update progress
+            setProgress(data.progress || 0);
+            
+            // Add message if not already present
+            setProgressMessages(prev => {
+              const exists = prev.some(msg => msg.step === data.step);
+              if (exists) return prev;
+              return [...prev, { step: data.step, message: data.message, progress: data.progress }];
+            });
+            
+          } catch (parseErr) {
+            console.error('❌ Failed to parse SSE JSON:', parseErr);
+            console.error('Raw data line:', dataLine);
+            setError('Received malformed data from server. Please try again.');
+            setLoading(false);
+            return;
           }
         }
       }
     } catch (err) {
-      // Catch network / fetch errors
       console.error('Network or fetch error:', err);
       setError(err.message || 'Network error. Please check your connection.');
       setLoading(false);
@@ -341,7 +350,6 @@ export default function Home() {
           />
         </div>
 
-        {/* Centered Start Answering button */}
         <div className="flex flex-col items-center gap-4 mb-4">
           <div className="flex items-center gap-4">
             <button
@@ -420,7 +428,6 @@ export default function Home() {
           </button>
         </form>
 
-        {/* Progress display */}
         {loading && (
           <div className="mt-4 p-4 bg-blue-50 dark:bg-blue-900/20 rounded-lg border border-blue-200 dark:border-blue-800">
             <div className="flex items-center gap-3 mb-3">
@@ -429,7 +436,6 @@ export default function Home() {
               <span className="text-sm text-blue-500 dark:text-blue-300 ml-auto">{progress}%</span>
             </div>
             
-            {/* Progress bar */}
             <div className="w-full h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden mb-3">
               <div 
                 className="h-full bg-blue-600 rounded-full transition-all duration-500"
@@ -437,7 +443,6 @@ export default function Home() {
               />
             </div>
             
-            {/* Step messages */}
             <div className="space-y-1 max-h-32 overflow-y-auto">
               {progressMessages.map((msg, idx) => (
                 <div key={idx} className="text-sm text-gray-600 dark:text-gray-300 flex items-center gap-2">
