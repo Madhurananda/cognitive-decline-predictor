@@ -76,6 +76,483 @@ The project demonstrates practical experience across:
 * Frontend Integration
 * Production-Oriented Error Handling
 
+
+---
+
+## 🔬 From Research Data to Production Model
+
+One of the central objectives of this project was to demonstrate the complete journey from **clinical research data to a deployable AI application**.
+
+The model used by the application was not developed from a generic demonstration dataset. It was built using speech data originating from the **CognoSpeak research programme**, a real-world study investigating the automatic and remote assessment of early cognitive decline from conversational speech.
+
+The development pathway can be summarised as:
+
+```text
+CognoSpeak Research Programme
+        │
+        ▼
+Real-World Clinical Speech Data Collection
+        │
+        ▼
+PROCESS-2 Benchmark Dataset
+        │
+        ▼
+Data Engineering & Quality Control
+        │
+        ▼
+Acoustic + Linguistic Feature Engineering
+        │
+        ▼
+Machine Learning Model Development
+        │
+        ├── Logistic Regression
+        └── Random Forest
+        │
+        ▼
+Validation & Model Selection
+        │
+        ▼
+Predefined Held-Out Test Evaluation
+        │
+        ▼
+Feature Importance & Performance Investigation
+        │
+        ▼
+Saved Model Artefacts
+        │
+        ▼
+FastAPI Inference Service
+        │
+        ▼
+Real-Time Web Application
+        │
+        ▼
+Cloud Deployment
+```
+
+This section describes how the underlying research data was transformed into the machine learning model used by the deployed application.
+
+---
+
+### 1. Data Collection and Research Background
+
+The speech data originates from the **CognoSpeak** research programme, which investigates the use of automatically collected conversational speech for the assessment of early cognitive decline.
+
+CognoSpeak was designed around the collection of real-world speech data from cognitive assessment interactions, providing a foundation for investigating acoustic, linguistic, and multimodal markers associated with cognitive impairment.
+
+The data collection methodology and CognoSpeak system are described in:
+
+> **Pahar, Madhurananda, et al.** "CognoSpeak: an automatic, remote assessment of early cognitive decline in real-world conversational speech." *2025 IEEE Symposium on Computational Intelligence in Health and Medicine (CIHM).* IEEE, 2025.
+
+📄 **Paper:**
+https://ieeexplore.ieee.org/abstract/document/10969487
+
+Further work investigating the automatic detection of early cognitive decline using multimodal feature fusion and transfer learning is described in:
+
+> **Pahar, Madhurananda, et al.** "Automatic detection of early cognitive decline using multimodal feature fusion and transfer learning on real-world conversational speech." *IEEE Journal of Biomedical and Health Informatics* 29.12 (2025): 8727-8734.
+
+📄 **Paper:**
+https://ieeexplore.ieee.org/abstract/document/11284700
+
+These studies provide the research context for the speech data and modelling approaches underlying this engineering project.
+
+---
+
+### 2. PROCESS-2 Benchmark Dataset
+
+A subset of the CognoSpeak data was subsequently released as **PROCESS-2**, a benchmark speech corpus designed to support reproducible research into early cognitive impairment detection.
+
+The PROCESS-2 dataset is described in:
+
+> **Pahar, Madhurananda, et al.** "PROCESS-2: A Benchmark Speech Corpus for Early Cognitive Impairment Detection." *arXiv preprint arXiv:2605.14888* (2026).
+
+📄 **Paper:**
+https://arxiv.org/abs/2605.14888
+
+For this project, the available dataset consisted of:
+
+| Group                | Number of Participants |
+| -------------------- | ---------------------: |
+| Healthy Controls     |                    200 |
+| Cognitively Impaired |                    200 |
+| **Total**            |                **400** |
+
+The classification task was formulated as a binary prediction problem:
+
+```text
+0 → Healthy Control
+1 → Cognitive Impairment
+```
+
+The dataset was balanced across the two classes.
+
+---
+
+### 3. Data Engineering and Feature Preparation
+
+The raw speech data was transformed into a structured machine-learning dataset through a data engineering and feature extraction pipeline.
+
+The process involved:
+
+```text
+Raw Audio
+    │
+    ▼
+Audio Validation
+    │
+    ▼
+Speech Transcription
+    │
+    ├── Transcript
+    │
+    ▼
+Acoustic Feature Extraction
+    │
+    ├── Silence characteristics
+    ├── Energy
+    ├── Pitch statistics
+    ├── Jitter
+    └── Shimmer
+    │
+    ▼
+Linguistic Feature Extraction
+    │
+    ├── Lexical diversity
+    ├── Content-word ratio
+    ├── Stopword ratio
+    ├── Mean Length of Utterance
+    └── Other linguistic statistics
+    │
+    ▼
+Feature Alignment & Cleaning
+    │
+    ▼
+Machine Learning Feature Matrix
+```
+
+The final modelling dataset contained **21 handcrafted acoustic and linguistic features**.
+
+This deliberately compact representation was chosen to create a lightweight and inspectable baseline model rather than relying on a large end-to-end deep learning architecture.
+
+The approach demonstrates the complete transformation of speech data into a structured representation suitable for machine learning:
+
+* audio processing
+* speech transcription
+* acoustic feature extraction
+* linguistic feature extraction
+* feature alignment
+* data cleaning
+* feature scaling
+* reproducible model artefact generation
+
+---
+
+### 4. Normative Feature Modelling
+
+In addition to training the classification model, normative statistics were calculated from the **200 healthy control participants**.
+
+These statistics were saved to:
+
+```text
+models/normative_stats.pkl
+```
+
+The normative reference distributions are used by the deployed application to contextualise an individual's extracted speech characteristics and support the radar/spider-chart visualisation.
+
+Examples include:
+
+| Feature                  |     Mean | Standard Deviation |            Range |
+| ------------------------ | -------: | -----------------: | ---------------: |
+| Silence Ratio            |    0.739 |              0.093 |      0.492–0.953 |
+| Type-Token Ratio         |    0.574 |              0.091 |      0.372–0.810 |
+| Content Ratio            |    0.430 |              0.032 |      0.351–0.517 |
+| Mean Length of Utterance |   16.757 |              4.926 |     6.417–31.000 |
+| Word Count               |  160.626 |             77.172 |           31–376 |
+| Pitch Standard Deviation | 1142.445 |             69.457 | 978.994–1332.233 |
+
+These values are not used as clinical thresholds. Instead, they provide a reference distribution derived from the healthy control group for visualising how extracted speech features relate to the normative dataset.
+
+---
+
+### 5. Model Development Strategy
+
+The 400-participant dataset was organised into training, validation, and held-out test partitions:
+
+| Split      | Samples | Percentage |
+| ---------- | ------: | ---------: |
+| Training   |     256 |        64% |
+| Validation |      64 |        16% |
+| Test       |      80 |        20% |
+| **Total**  | **400** |   **100%** |
+
+Two deliberately simple and interpretable machine learning approaches were evaluated:
+
+#### Logistic Regression
+
+A linear baseline providing a transparent reference model.
+
+#### Random Forest
+
+A non-linear ensemble model capable of learning interactions between acoustic and linguistic features.
+
+The modelling pipeline consisted of:
+
+```text
+Feature Matrix
+      │
+      ▼
+Training Partition
+      │
+      ├── Feature Scaling
+      │
+      ├── Logistic Regression
+      │
+      └── Random Forest
+                │
+                ▼
+        Validation Evaluation
+                │
+                ▼
+        Model Performance Review
+                │
+                ▼
+     Predefined Held-Out Test Set
+```
+
+The feature scaler, feature column order, and final trained model were saved as reusable inference artefacts:
+
+```text
+models/
+├── cognitive_model.pkl
+├── scaler.pkl
+├── feature_columns.pkl
+└── normative_stats.pkl
+```
+
+---
+
+### 6. Model Performance
+
+Both models were evaluated using:
+
+* Accuracy
+* Binary F1 Score
+* Macro F1 Score
+* Area Under the ROC Curve (AUC-ROC)
+* Confusion Matrices
+
+#### Performance Summary
+
+| Model               | Split      |  Accuracy | Binary F1 |  Macro F1 |   AUC-ROC |
+| ------------------- | ---------- | --------: | --------: | --------: | --------: |
+| Logistic Regression | Training   |     0.715 |     0.704 |     0.714 |     0.764 |
+| Logistic Regression | Validation |     0.688 |     0.677 |     0.687 |     0.735 |
+| Logistic Regression | **Test**   | **0.738** | **0.747** | **0.737** | **0.804** |
+| Random Forest       | Training   |     1.000 |     1.000 |     1.000 |     1.000 |
+| Random Forest       | Validation |     0.703 |     0.678 |     0.701 |     0.752 |
+| Random Forest       | **Test**   | **0.750** | **0.767** | **0.749** | **0.806** |
+
+The Random Forest achieved the strongest held-out test performance and was selected as the model used by the deployed application.
+
+#### Final Held-Out Test Performance
+
+```text
+Accuracy:        0.750
+Binary F1 Score: 0.767
+Macro F1 Score:  0.749
+AUC-ROC:         0.806
+```
+
+The test results were obtained using the held-out evaluation partition rather than the training data.
+
+---
+
+### 7. Performance Investigation
+
+The performance investigation deliberately considered results across the training, validation, and test partitions rather than reporting only the strongest metric.
+
+The Random Forest achieved:
+
+```text
+Training F1:   1.000
+Validation F1: 0.678
+Test F1:       0.767
+```
+
+The perfect training performance, combined with substantially lower validation and test performance, indicates that the model can fit the training data extremely closely and highlights the importance of evaluation on unseen data.
+
+This was one reason for retaining the held-out test evaluation as an important part of the development workflow.
+
+Rather than interpreting training accuracy as evidence of real-world performance, the deployed model was selected based on its performance on unseen data.
+
+---
+
+### 8. Held-Out Test Confusion Matrix
+
+The final Random Forest model produced the following results on the held-out test set:
+
+```text
+                    Predicted
+
+                  Healthy   Impaired
+Actual Healthy       27         13
+
+Actual Impaired       7         33
+```
+
+This corresponds to:
+
+| Metric                              | Value |
+| ----------------------------------- | ----: |
+| Sensitivity / Recall for Impairment | 82.5% |
+| Specificity for Healthy Controls    | 67.5% |
+| Precision for Impairment            | 71.7% |
+
+The model showed higher sensitivity than specificity on the held-out test partition, indicating that impaired participants were identified more reliably than healthy participants.
+
+The resulting false-positive and false-negative trade-off would need to be considered carefully in any future clinical application.
+
+This repository is a technical and research-oriented demonstration and does not represent a clinically validated diagnostic system.
+
+---
+
+### 9. Feature Importance and Model Interpretation
+
+One advantage of the Random Forest approach is that the contribution of individual features can be inspected.
+
+The ten most important features were:
+
+| Rank | Feature         | Importance |
+| ---: | --------------- | ---------: |
+|    1 | `silence_ratio` |     0.0838 |
+|    2 | `content_ratio` |     0.0802 |
+|    3 | `rms`           |     0.0727 |
+|    4 | `shimmer`       |     0.0654 |
+|    5 | `speech_time`   |     0.0612 |
+|    6 | `stop_ratio`    |     0.0587 |
+|    7 | `avg_word_len`  |     0.0583 |
+|    8 | `mlu`           |     0.0563 |
+|    9 | `pronoun_ratio` |     0.0499 |
+|   10 | `ttr`           |     0.0490 |
+
+Several of the highest-ranked features are consistent with speech and language characteristics that have been investigated in previous research on cognitive impairment.
+
+These include:
+
+* **Silence ratio** — reflecting pausing and speech continuity.
+* **Content ratio** — reflecting the proportion of semantically informative words.
+* **RMS energy** — capturing aspects of vocal intensity.
+* **Shimmer** — reflecting cycle-to-cycle variability in vocal amplitude.
+* **Speech time** — representing the amount of verbal output.
+* **Lexical and syntactic features** — including lexical diversity and mean length of utterance.
+
+Feature importance values should be interpreted as model-specific indicators of contribution rather than causal explanations. They nevertheless provide an additional level of transparency compared with a purely black-box inference pipeline.
+
+The complete feature importance analysis and confusion matrix were also saved as model artefacts:
+
+```text
+models/
+├── cognitive_model.pkl
+├── scaler.pkl
+├── feature_columns.pkl
+├── normative_stats.pkl
+└── confusion_matrix.png
+```
+
+---
+
+### 10. Relationship to Previous Research
+
+The modelling approach used in this application builds upon a broader body of research investigating speech as a source of potential biomarkers for cognitive decline.
+
+The CognoSpeak and multimodal feature-fusion studies provide the research foundation for the data collection and modelling context:
+
+> **Pahar, Madhurananda, et al.** "CognoSpeak: an automatic, remote assessment of early cognitive decline in real-world conversational speech." *2025 IEEE Symposium on Computational Intelligence in Health and Medicine (CIHM).* IEEE, 2025.
+
+https://ieeexplore.ieee.org/abstract/document/10969487
+
+> **Pahar, Madhurananda, et al.** "Automatic detection of early cognitive decline using multimodal feature fusion and transfer learning on real-world conversational speech." *IEEE Journal of Biomedical and Health Informatics* 29.12 (2025): 8727-8734.
+
+https://ieeexplore.ieee.org/abstract/document/11284700
+
+The PROCESS-2 benchmark provides the dataset and predefined evaluation framework used for the current implementation:
+
+> **Pahar, Madhurananda, et al.** "PROCESS-2: A Benchmark Speech Corpus for Early Cognitive Impairment Detection." *arXiv preprint arXiv:2605.14888* (2026).
+
+https://arxiv.org/abs/2605.14888
+
+The results obtained by the compact 21-feature baseline are broadly consistent with the range of performance reported in comparable speech-based cognitive impairment studies described in this research literature.
+
+Importantly, the objective of this repository was not to establish a new state-of-the-art clinical model. Instead, the focus was on demonstrating the complete engineering process required to transform research data and machine learning models into a reproducible, inspectable, and deployable AI system.
+
+---
+
+### 11. From Model to Deployed Application
+
+After model development and evaluation, the selected Random Forest model was integrated into the application backend.
+
+The saved artefacts are loaded when the FastAPI service starts:
+
+```text
+Application Startup
+        │
+        ▼
+Load Model
+        │
+        ▼
+Load Feature Scaler
+        │
+        ▼
+Load Feature Schema
+        │
+        ▼
+Load Normative Statistics
+        │
+        ▼
+API Ready
+```
+
+When a user submits an audio recording, the backend reproduces the feature engineering pipeline and ensures that the generated features match the model's expected feature schema.
+
+The resulting workflow is:
+
+```text
+New User Audio
+      │
+      ▼
+Audio Processing
+      │
+      ▼
+Speech Transcription
+      │
+      ▼
+21 Feature Extraction
+      │
+      ▼
+Feature Alignment
+      │
+      ▼
+Scaler
+      │
+      ▼
+Random Forest Model
+      │
+      ├── Prediction
+      ├── Risk Score
+      └── Feature Values
+              │
+              ▼
+      Normative Comparison
+              │
+              ▼
+      LLM Explanation
+              │
+              ▼
+      Real-Time Frontend
+```
+
+This closes the loop between **research data, machine learning development, model evaluation, and production-oriented deployment**.
+
 ---
 
 # ✨ Key Engineering Features
