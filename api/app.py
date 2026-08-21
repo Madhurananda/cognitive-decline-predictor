@@ -554,7 +554,7 @@ app.add_middleware(
 # ============================================
 # Usage Limit Middleware (Resilient)
 # ============================================
-MAX_USAGE_PER_IP = 999  # Change this to your desired limit
+MAX_USAGE_PER_IP = 99  # Change this to your desired limit
 
 @app.middleware("http")
 async def limit_usage_middleware(request: Request, call_next):
