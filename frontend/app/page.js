@@ -493,7 +493,7 @@ export default function Home() {
               </div>
 
               <div>
-                <span className="font-medium">Explanation:</span>
+                <span className="font-medium">AI Explanation:</span>
                 <p className="mt-1 text-gray-600 dark:text-gray-300 leading-relaxed">
                   {cleanExplanation(result.explanation)}
                 </p>
@@ -502,7 +502,7 @@ export default function Home() {
 
             {result.spider_data && (
               <div>
-                <h3 className="text-2xl font-bold">📈 Analysis</h3>
+                <h3 className="text-2xl font-bold">📈 Speech Biomarker Analysis</h3>
                 <div className="mt-2 flex justify-center">
                   <SpiderChart spiderData={result.spider_data} />
                 </div>
