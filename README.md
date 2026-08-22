@@ -8,7 +8,7 @@
 ![Docker](https://img.shields.io/badge/Docker-Containerised-blue.svg)
 ![Google Cloud Run](https://img.shields.io/badge/Google%20Cloud-Cloud%20Run-blue.svg)
 ![Vercel](https://img.shields.io/badge/Vercel-Deployment-black.svg)
-![License](https://img.shields.io/badge/License-MIT-yellow.svg)
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
 ---
 
@@ -19,6 +19,21 @@
 👉 **https://cognitive-decline-predictor-7qco-neon.vercel.app/**
 
 > **Note:** The public demonstration is rate-limited to manage API and cloud infrastructure costs.
+
+---
+
+### 📸 Screenshots & Walkthrough
+
+<br>
+
+| | |
+|:---:|:---:|
+| **1. Welcome & Terms**<br>The user is presented with a brief introduction to the project, research context, and usage guidelines. Acceptance is required before proceeding. | <img width="800" alt="Welcome page" src="https://github.com/user-attachments/assets/60dd85e9-0ef8-461b-b6fe-093de4249675" /> |
+| **2. Recording Interface**<br>The user is prompted to describe the *Cookie Theft* picture. Audio must be between 10 seconds and 3 minutes in length. A live waveform visualises the input. | <img width="800" alt="Recording interface" src="https://github.com/user-attachments/assets/b397f504-7b22-471f-98a0-48a2deefbc13" /> |
+| **3. Progress Streaming**<br>Once the audio is submitted, real‑time progress updates (conversion, transcription, feature extraction, prediction, explanation) are streamed via Server‑Sent Events. | <img width="800" alt="Progress stream" src="https://github.com/user-attachments/assets/d82c56c8-eea8-4244-bddf-e7070d75d0ad" /> |
+| **4. Risk Assessment & Explanation**<br>The classifier returns a risk score (low/high) and a confidence level. The transcript and an AI‑generated empathetic explanation are displayed. | <img width="800" alt="Risk and explanation" src="https://github.com/user-attachments/assets/837a5d40-cf94-44c5-aa1b-70b8b528a19e" /> |
+| **5. Spider Diagram – Speech Biomarkers**<br>An interactive radar chart compares the user’s speech features against a healthy reference population, offering interpretable visual feedback. | <img width="800" alt="Spider diagram" src="https://github.com/user-attachments/assets/26dd6e19-e771-4151-9ba1-feae2c2c5781" /> |
+| **6. Detailed Feature View**<br>For transparency, the raw feature values used by the model and LLM can be expanded and inspected. | <img width="800" alt="Detailed features" src="https://github.com/user-attachments/assets/2223ae4e-4236-466c-9571-545dfb97e584" /> |
 
 ---
 
