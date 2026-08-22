@@ -45,7 +45,7 @@ export default function Welcome({ onAccept }) {
 
           {/* Warm-up notice */}
           <div className="mt-2 p-3 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg text-sm text-amber-700 dark:text-amber-300">
-            <span className="font-medium">⏳ Warm‑up time:</span> The first request after a period of inactivity may take up to <strong>20 seconds</strong> while the cloud service starts up (free tier with 0 minimum instances). Please be patient – subsequent requests will be faster.
+            <span className="font-medium">⏳ Warm‑up time:</span> The first request after a period of inactivity may take up to <strong>20 seconds</strong> while the cloud service starts up. Please be patient – subsequent requests will be faster.
           </div>
 
           <p className="text-sm text-gray-500 dark:text-gray-400">
